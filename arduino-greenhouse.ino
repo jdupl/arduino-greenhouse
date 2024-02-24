@@ -3,9 +3,16 @@
 //#include <DallasTemperature.h>
 #include <SPI.h>
 #include <Wire.h>
-#include <U8g2lib.h>
-#include <U8x8lib.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
 #include <Keypad.h> // from  Mark Stanley and Alexander Brevig
+
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+#define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
 
 // sensors
 #define DHT_PIN 22
@@ -72,7 +79,8 @@ bool dht22Working = true;
 float minDesiredTemp = 24.0;
 float maxDesiredTemp = 26.0;
 
-int stageOverride = 10; // 10 for automatic
+int stageJump = -1; // set to -1 when stage has been jumped
+bool stageFreeze = false; // true will avoid freeze the stages to the current one
 bool ventilationActivated = true;
 bool rollupActivated = true;
 
@@ -85,8 +93,8 @@ bool closingStages = false; // Flag to indicate if stages are closing
 
 
 // Configuration menu options
-enum ConfigOption { MIN_TEMP, MAX_TEMP, STAGE_OVERRIDE, VENTILATION, ROLLUP };
-#define CONFIG_OPTION_COUNT 5 // UPDATE MANUALLY THIS COUNT
+enum ConfigOption { MIN_TEMP, MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
+#define CONFIG_OPTION_COUNT 6 // UPDATE MANUALLY THIS COUNT
 
 ConfigOption currentConfigOption = MIN_TEMP;
 
@@ -110,7 +118,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 // OneWire oneWire(ONE_WIRE_BUS);
 //DallasTemperature sensors(&oneWire);
 
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+// U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 void scrollMenu(int direction) {
   currentConfigOption = static_cast<ConfigOption>((currentConfigOption + direction + CONFIG_OPTION_COUNT) % CONFIG_OPTION_COUNT);
@@ -120,17 +128,24 @@ void toggleOption(bool& option) {
   option = !option;
 }
 
-float promptNumericInput(const char* prompt, float currentValue) {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_squeezed_b6_tr); // Choose a font
-  u8g2.setCursor(0, 10);
-  u8g2.print(prompt);
-  u8g2.setCursor(0, 25);
-  u8g2.print("Current Value: ");
-  u8g2.print(currentValue);
-  u8g2.sendBuffer();
+void promptNumericInputDisplay(const char* prompt, String displayValue) {
+    display.clearDisplay();
 
+    display.setTextSize(1); // Draw 2X-scale text
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.println(prompt);
+
+    display.print("Value: ");
+    display.println(displayValue);
+    display.display();
+}
+
+float promptNumericInput(const char* prompt, float currentValue) {
   String input = "";
+  promptNumericInputDisplay(prompt, String(currentValue));
+
   while (true) {
     char key = keypad.getKey();
     if (key != NO_KEY) {
@@ -140,22 +155,19 @@ float promptNumericInput(const char* prompt, float currentValue) {
         return currentValue; // Cancel input
       } else if (isdigit(key) || key == '.') {
         input += key;
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_squeezed_b6_tr); // Choose a font
-        u8g2.setCursor(0, 10);
-        u8g2.print(prompt);
-        u8g2.setCursor(0, 25);
-        u8g2.print("Current Value: ");
-        u8g2.print(input);
-        u8g2.sendBuffer();
       }
+      promptNumericInputDisplay(prompt, input);
     }
+    delay(50);
   }
 }
 
 void displayConfigMenu() {
-  u8g2.clearBuffer();
-  u8g2.setFont(u8g2_font_squeezed_b6_tr);
+
+  display.clearDisplay();
+  display.setTextSize(1); // Draw 2X-scale text
+  display.setTextColor(SSD1306_WHITE);
+
 
   int numOptions = 4; // Number of configuration options to display at a time
   int startOption = static_cast<int>(currentConfigOption) - 1;
@@ -163,38 +175,42 @@ void displayConfigMenu() {
   if (startOption + numOptions > CONFIG_OPTION_COUNT) startOption = CONFIG_OPTION_COUNT - numOptions;
 
   for (int i = 0; i < numOptions; i++) {
-    u8g2.setCursor(10, 10 + (i * 15));
+    display.setCursor(10, 10 + (i * 15));
     ConfigOption option = static_cast<ConfigOption>(startOption + i);
 
     switch (option) {
       case MIN_TEMP:
-        u8g2.print("Set Min Temp: ");
-        u8g2.print(minDesiredTemp);
+        display.print("Set Min Temp: ");
+        display.print(minDesiredTemp);
         break;
       case MAX_TEMP:
-        u8g2.print("Set Max Temp: ");
-        u8g2.print(maxDesiredTemp);
+        display.print("Set Max Temp: ");
+        display.print(maxDesiredTemp);
         break;
-      case STAGE_OVERRIDE:
-        u8g2.print("Stage Override: ");
-        u8g2.print(stageOverride);
+      case STAGE_JUMP:
+        display.print("Jump stage: ");
+        display.print(stageJump);
+        break;
+      case STAGE_FREEZE:
+        display.print("Freeze stages: ");
+        display.print(ventilationActivated ? "On" : "Off");
         break;
       case VENTILATION:
-        u8g2.print("Ventilation: ");
-        u8g2.print(ventilationActivated ? "On" : "Off");
+        display.print("Ventilation: ");
+        display.print(ventilationActivated ? "On" : "Off");
         break;
       case ROLLUP:
-        u8g2.print("Rollup: ");
-        u8g2.print(rollupActivated ? "On" : "Off");
+        display.print("Rollup: ");
+        display.print(rollupActivated ? "On" : "Off");
         break;
     }
   }
 
   // Display selector
-  u8g2.setCursor(0, 10 + ((currentConfigOption - startOption) * 15));
-  u8g2.print(">");
+  display.setCursor(0, 10 + ((currentConfigOption - startOption) * 15));
+  display.print(">");
 
-  u8g2.sendBuffer();
+  display.display();
 }
 
 void printTx(String chars) {
@@ -397,13 +413,18 @@ void handleConfigMenuKeyInput(char keyInput) {
     case '#': // Choose option
         switch (currentConfigOption) {
         case MIN_TEMP:
-            minDesiredTemp = promptNumericInput("Enter Min Temp: ", minDesiredTemp);
+            minDesiredTemp = promptNumericInput("Enter Min Temp: " , minDesiredTemp);
             break;
         case MAX_TEMP:
-          maxDesiredTemp = promptNumericInput("Enter Max Temp: ", maxDesiredTemp);
-          break;
-        case STAGE_OVERRIDE:
-          stageOverride = static_cast<int>(promptNumericInput("Enter Stage Override \n 0 closed 6 automatic: ", static_cast<float>(stageOverride)));
+            maxDesiredTemp = promptNumericInput("Enter Max Temp: ", maxDesiredTemp);
+            break;
+        case STAGE_JUMP:
+            stageJump = static_cast<int>(promptNumericInput(
+                "0 closed 1 fans 2 1/4 rollup.. 4 100% rollup"
+                , static_cast<float>(stageJump)));
+            break;
+        case STAGE_FREEZE:
+          toggleOption(stageFreeze);
           break;
         case VENTILATION:
           toggleOption(ventilationActivated);
@@ -430,26 +451,29 @@ void handleKeyInput(char keyInput) {
 }
 
 void displayDHT22() {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_squeezed_b6_tr);
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
 
-    u8g2.setCursor(0, 10);
-    u8g2.print("T: ");
-    u8g2.print(currentTemp);
+    display.print("T: ");
+    display.println(currentTemp);
 
-    u8g2.setCursor(0, 40);
-    u8g2.print("H: ");
-    u8g2.print(currentHumidity);
+    display.print("H: ");
+    display.println(currentHumidity);
 
-    u8g2.sendBuffer();
+    display.display();
 }
 
 void displayDHT22Error() {
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_squeezed_b6_tr);
-    u8g2.setCursor(0, 10);
-    u8g2.print("DHT22 ERROR");
-    u8g2.sendBuffer();
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.println("DHT22 FATAL ERROR");
+
+    display.display();
 }
 
 void displayStats() {
@@ -503,8 +527,12 @@ void setup() {
 
     pinMode(FAN_RELAY, OUTPUT);
 
-    u8g2.begin();
     dht.begin();
+
+    if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+        Serial.println(F("SSD1306 allocation failed"));
+        for(;;);
+    }
 
     displayState = STATS;
 
