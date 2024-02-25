@@ -1,3 +1,18 @@
+// TODO
+
+// MUST write to eeprom settings
+// MUST open actuator untill limit switch is contacted
+// MUST calculate time to open rollups
+// MUST async operation of bts controls (don't lock UI)
+// MUST start up routine (close all systems)
+
+// NICE current sensing from bts controllers for better error detection
+// NICE track and display uptime
+// NICE track and display min/max temps
+// NICE furnace control
+
+
+
 #include <DHT.h>
 //#include <OneWire.h>
 //#include <DallasTemperature.h>
@@ -80,7 +95,7 @@ float minDesiredTemp = 24.0;
 float maxDesiredTemp = 26.0;
 
 int stageJump = -1; // set to -1 when stage has been jumped
-bool stageFreeze = false; // true will avoid freeze the stages to the current one
+bool stageFreeze = false; // true will avoid changing stages to lock to the current one
 bool ventilationActivated = true;
 bool rollupActivated = true;
 
@@ -163,7 +178,6 @@ float promptNumericInput(const char* prompt, float currentValue) {
 }
 
 void displayConfigMenu() {
-
   display.clearDisplay();
   display.setTextSize(1); // Draw 2X-scale text
   display.setTextColor(SSD1306_WHITE);
@@ -193,7 +207,7 @@ void displayConfigMenu() {
         break;
       case STAGE_FREEZE:
         display.print("Freeze stages: ");
-        display.print(ventilationActivated ? "On" : "Off");
+        display.print(stageFreeze ? "On" : "Off");
         break;
       case VENTILATION:
         display.print("Ventilation: ");
@@ -482,8 +496,6 @@ void displayStats() {
   } else {
       displayDHT22Error();
   }
-
-
 }
 
 void handleDisplayState() {
