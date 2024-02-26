@@ -112,7 +112,7 @@ bool rollupActivated = true;
 unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
 
 bool closingStages = false; // Flag to indicate if stages are closing
-float currentStageIndexTemp = 0;
+float currentStageTemp = 0;
 
 
 // Stage
@@ -124,9 +124,10 @@ unsigned long stageStartTime = 0;
 
 // Operation state (async operation of motors)
 enum OpState {CLOSE_WINDOW, OPEN_WINDOW, ROLLUP_OP, ROLLDOWN_OP, IDLING};
-OpState currentOpState = IDLING;
+OpState currentOperation = IDLING;
 unsigned long operationStartTime = 0;
 unsigned long operationStopTime = 0;
+char lastChar = 'x';
 
 // Configuration menu options
 enum ConfigOption { MIN_TEMP, MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
@@ -256,14 +257,13 @@ void printTx(String chars) {
 
 void updateOperation() {
     // Operation state (async operation of motors)
-    if (currentOpState == IDLING) {
+    if (currentOperation == IDLING) {
         // ignore
         return;
     }
     if (operationStopTime < millis()) {
         printTx("halting current operation due to timer");
         stopCurrentOperation();
-        return;
     }
     if (!shouldCurrentOperationContinue()) {
         printTx("halting current operation due to it's conditions being met");
@@ -320,7 +320,7 @@ bool hasCurrentFlowing(int pin) {
 }
 
 void stopCurrentOperation() {
-    switch (currentOpState) {
+    switch (currentOperation) {
         case OPEN_WINDOW:
             windowStop();
             startFan();
@@ -332,7 +332,7 @@ void stopCurrentOperation() {
             printTx("TO IMPLEMENT");
             break;
     }
-    currentOpState = IDLING;
+    currentOperation = IDLING;
 }
 
 void openWindowStart() {
@@ -365,7 +365,7 @@ void closeWindowStart() {
 }
 
 bool shouldCurrentOperationContinue() {
-    switch (currentOpState) {
+    switch (currentOperation) {
         case OPEN_WINDOW:
             return !limitSwitchTouched() && hasCurrentFlowing(ACTUATOR_R_IS);
         case CLOSE_WINDOW:
@@ -426,12 +426,12 @@ void doStageUpdate(float currentTemp, bool closing) {
     }
 }
 
-void updateStageStatus(float currentTemp) {
+void updateStageStatus() {
     // TODO check for early stage change if temp changed too much
 
     unsigned long elapsedTime = millis() - stageStartTime;
     if (elapsedTime - stageStartTime < STAGE_CHANGE_WAIT_MS) {
-        printTx("Stage change must wait a bit...")
+        printTx("Stage change must wait a bit...");
         return;
     }
 
@@ -523,11 +523,11 @@ void handleConfigMenuKeyInput(char keyInput) {
 
           // test code
           if (ventilationActivated) {
-              currentOpState = OPEN_WINDOW;
+              currentOperation = OPEN_WINDOW;
               openWindowStart();
 
           } else {
-              currentOpState = CLOSE_WINDOW;
+              currentOperation = CLOSE_WINDOW;
               closeWindowStart();
           }
           ///
@@ -564,8 +564,6 @@ void displayDHT22() {
 
     display.print("H: ");
     display.println(currentHumidity);
-
-    display.display();
 }
 
 void displayDHT22Error() {
@@ -576,7 +574,7 @@ void displayDHT22Error() {
 
     display.println("DHT22 FATAL ERROR");
 
-    display.display();
+
 }
 
 void displayStats() {
@@ -585,6 +583,23 @@ void displayStats() {
   } else {
       displayDHT22Error();
   }
+
+  display.print("stage: ");
+  display.println(String(currentStage));
+
+  if (currentOperation != IDLING) {
+      display.print("Op... ");
+      char c = '+';
+      if (lastChar == '+') {
+          c = 'x';
+          lastChar = 'x';
+      } else {
+          lastChar = '+';
+      }
+      display.print(c);
+
+  }
+  display.display();
 }
 
 void handleDisplayState() {
@@ -604,25 +619,35 @@ void updateSensorsIfNeeded() {
     }
 }
 
-
-void loop() {
-    updateSensorsIfNeeded();
-
+void handleUserKeyAndDisplay() {
     char key = keypad.getKey();
 
     if (key != NO_KEY) {
-        // Handle keypad input
         handleKeyInput(key);
     }
 
     handleDisplayState();
-    updateOperation();
+}
+
+void loop() {
+    // renew sensor data
+    updateSensorsIfNeeded();
+
+    handleUserKeyAndDisplay();
+
+
+    if (currentOperation == IDLING) {
+        updateStageStatus();
+    } else {
+        // stop current operation if timer has expired
+        updateOperation();
+    }
 
     delay(50);
 }
 
 void pinSetup() {
-    // pinMode(FAN_RELAY, OUTPUT);
+    pinMode(FAN_RELAY, OUTPUT);
 
     pinMode(ACTUATOR_LPWM, OUTPUT);
     pinMode(ACTUATOR_RPWM, OUTPUT);
@@ -646,4 +671,5 @@ void setup() {
     }
 
     displayState = STATS;
+    currentOperation = IDLING;
 }
