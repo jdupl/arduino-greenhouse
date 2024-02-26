@@ -94,8 +94,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define ACTUATOR_MAX_DELAY_MS 60000
 #define ACTUATOR_IS_VAl_THRESHOLD 30 // gt than this threshold means current is flowing
 
-#define NB_STAGES 6
-#define STAGE_DURATION 300000 // Duration of each stage in milliseconds (5 minutes)
+#define STAGE_CHANGE_WAIT_MS 120000 // Duration between automatic stage changes (2 minutes)
 #define STAGE_DELTA_CELCIUS 1
 
 float currentTemp = -1;
@@ -110,12 +109,17 @@ bool stageFreeze = false; // true will avoid changing stages to lock to the curr
 bool ventilationActivated = true;
 bool rollupActivated = true;
 
-int currentStage = 0; // Initialize the stage to 0 (closed)
-float currentStageTemp = 0;
-
 unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
-unsigned long stageStartTime = 0; // Time at the beginning of the stage
+
 bool closingStages = false; // Flag to indicate if stages are closing
+float currentStageIndexTemp = 0;
+
+
+// Stage
+enum Stage {VENT_CLOSED, VENT_OPEN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
+Stage currentStage = VENT_CLOSED;
+unsigned long stageStartTime = 0;
+// unsigned long stageStopTime = 0;
 
 
 // Operation state (async operation of motors)
@@ -381,71 +385,65 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-// void closingStageUpdate() {
-//     if (currentStage == 0) {
-//         closeVentilation();
-//     } else {
-//         closeRollUp();
-//     }
-// }
-//
-// void openingStageUpdate() {
-//     if (currentStage == 1) {
-//         openVentilation();
-//     } else {
-//         openRollUp();
-//     }
-// }
-//
-// void doStageUpdate() {
-//     if (closingStages) {
-//         closingStageUpdate();
-//     } else {
-//         openingStageUpdate();
-//     }
-// }
+void doStageUpdate(float currentTemp, bool closing) {
+    currentStageTemp = currentTemp;
+    closingStages = closing;
+    stageStartTime = millis();
 
-// void updateStageStatus(float currentTemp) {
-//     // update the current stage of ventilation
-//     unsigned long elapsedTime = millis() - stageStartTime;
-//
-//     if (elapsedTime - stageStartTime < STAGE_DURATION) {
-//         // wait if stage wait time is not acheived
-//         return;
-//     }
-//
-//     float deltaCurrentVsStage = currentTemp - currentStageTemp;
-//
-//     if (deltaCurrentVsStage >= STAGE_DELTA_CELCIUS) {
-//         // reached threshold to increase ventilation
-//
-//         if (currentStage < NB_STAGES) {
-//             // max stage already acheived
-//             return;
-//         }
-//         // Increase the current stage and reset the start time of the stage
-//         currentStage++;
-//         stageStartTime = elapsedTime;
-//         currentStageTemp = currentTemp;
-//         closingStages = false;
-//         doStageUpdate();
-//
-//     } else if (deltaCurrentVsStage >= -STAGE_DELTA_CELCIUS) {
-//         // reached threshold to decrease ventilation
-//
-//         if (currentStage == 0) {
-//             // min stage already acheived
-//             return;
-//         }
-//
-//         // Decrease the current stage and reset the start time of the stage
-//         currentStage--;
-//         stageStartTime = elapsedTime;
-//         currentStageTemp = currentTemp;
-//         closingStages = true;
-//         doStageUpdate();
-//     }
-// }
+    if (closing) {
+        switch (currentStage) {
+            case VENT_CLOSED :
+                printTx("already at min stage");
+                break;
+            case VENT_OPEN :
+                currentStage = VENT_CLOSED;
+                closeWindowStart();
+            case ROLLUP_1 :
+                currentStage = VENT_OPEN;
+            case ROLLUP_2 :
+                currentStage = ROLLUP_1;
+            case ROLLUP_3 :
+                currentStage = ROLLUP_2;
+            case ROLLUP_4:
+                currentStage = ROLLUP_3;
+        }
+    } else {
+        switch (currentStage) {
+            case VENT_CLOSED :
+                currentStage = VENT_OPEN;
+                openWindowStart();
+            case VENT_OPEN :
+                currentStage = ROLLUP_1;
+            case ROLLUP_1 :
+                currentStage = ROLLUP_2;
+            case ROLLUP_2 :
+                currentStage = ROLLUP_3;
+            case ROLLUP_3 :
+                currentStage = ROLLUP_4;
+            case ROLLUP_4:
+                printTx("already at max stage");
+        }
+    }
+}
+
+void updateStageStatus(float currentTemp) {
+    // TODO check for early stage change if temp changed too much
+
+    unsigned long elapsedTime = millis() - stageStartTime;
+    if (elapsedTime - stageStartTime < STAGE_CHANGE_WAIT_MS) {
+        printTx("Stage change must wait a bit...")
+        return;
+    }
+
+
+    if (currentTemp > maxDesiredTemp) {
+        // reached min threshold to increase ventilation
+        doStageUpdate(currentTemp, false);
+    } else if (currentTemp <= maxDesiredTemp) {
+        // reached threshold to decrease ventilation
+        doStageUpdate(currentTemp, true);
+    }
+}
 
 
 // float getExtTemperature() {
