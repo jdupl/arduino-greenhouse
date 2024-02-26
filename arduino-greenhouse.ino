@@ -2,7 +2,6 @@
 
 // MUST write to eeprom settings
 // MUST calculate time to open rollups
-// MUST async operation of bts controls (don't lock UI)
 // MUST start up routine (close all systems)
 // MUST display current stage
 // MUST display current operation
@@ -118,6 +117,12 @@ unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
 unsigned long stageStartTime = 0; // Time at the beginning of the stage
 bool closingStages = false; // Flag to indicate if stages are closing
 
+
+// Operation state (async operation of motors)
+enum OpState {CLOSE_WINDOW, OPEN_WINDOW, ROLLUP_OP, ROLLDOWN_OP, IDLING};
+OpState currentOpState = IDLING;
+unsigned long operationStartTime = 0;
+unsigned long operationStopTime = 0;
 
 // Configuration menu options
 enum ConfigOption { MIN_TEMP, MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
@@ -245,6 +250,23 @@ void printTx(String chars) {
     }
 }
 
+void updateOperation() {
+    // Operation state (async operation of motors)
+    if (currentOpState == IDLING) {
+        // ignore
+        return;
+    }
+    if (operationStopTime < millis()) {
+        printTx("halting current operation due to timer");
+        stopCurrentOperation();
+        return;
+    }
+    if (!shouldCurrentOperationContinue()) {
+        printTx("halting current operation due to it's conditions being met");
+        stopCurrentOperation();
+    }
+}
+
 void openRollUp() {
     printTx("opening rollup...");
     analogWrite(ROLLUP_RPWM, 255);
@@ -273,14 +295,14 @@ bool limitSwitchTouched() {
     return digitalRead(ACTUATOR_LIMIT_SWITCH) == LOW;
 }
 
-int readAnalogPinSample(int pin, int millis) {
+int readAnalogPinSample(int pin, int ms) {
     unsigned long startTime = micros();
     unsigned long sum = 0;
     int numReadings = 0;
-    int micros = millis * 1000;
+    int targetMicros = ms * 1000;
 
     // Loop until sampling window is over
-    while (micros() - startTime < micros) {
+    while (micros() - startTime < targetMicros) {
         sum += analogRead(pin);
         numReadings++;
     }
@@ -293,69 +315,61 @@ bool hasCurrentFlowing(int pin) {
     return readAnalogPinSample(pin, 10) > ACTUATOR_IS_VAl_THRESHOLD;
 }
 
-void openWindow() {
-    printTx("opening window...");
+void stopCurrentOperation() {
+    switch (currentOpState) {
+        case OPEN_WINDOW:
+            windowStop();
+            startFan();
+        case CLOSE_WINDOW:
+            windowStop();
+            break;
+        case ROLLUP_OP:
+        case ROLLDOWN_OP:
+            printTx("TO IMPLEMENT");
+            break;
+    }
+    currentOpState = IDLING;
+}
 
-    unsigned long startTime = millis();
-    unsigned long maxTime = ACTUATOR_MAX_DELAY_MS + startTime;
+void openWindowStart() {
+    printTx("opening window...");
+    operationStartTime = millis();
+    operationStopTime = ACTUATOR_MAX_DELAY_MS + operationStartTime;
+    printTx(String(operationStartTime));
+    printTx(String(operationStopTime));
 
     analogWrite(ACTUATOR_RPWM, 255);
     analogWrite(ACTUATOR_LPWM, 0);
-
-    while (true) {
-        delay(50);
-
-        if (!hasCurrentFlowing(ACTUATOR_R_IS)) {
-            printTx("no current detected, halting actuator");
-            break;
-        }
-
-        if (limitSwitchTouched()) {
-            printTx("LIMIT SWITCH reached");
-            break;
-        }
-
-        if (millis() >= maxTime) {
-            printTx("WARNING: max delay reached for OPEN window actuator.");
-            break;
-        }
-    }
-
-    analogWrite(ACTUATOR_RPWM, 0);
-    analogWrite(ACTUATOR_LPWM, 0);
-
-    printTx("done opening window");
 }
 
-void closeWindow() {
-    printTx("closing window...");
+void windowStop() {
+    printTx("halting all window operation");
+    analogWrite(ACTUATOR_RPWM, 0);
+    analogWrite(ACTUATOR_LPWM, 0);
+}
 
-    unsigned long startTime = millis();
-    unsigned long maxTime = ACTUATOR_MAX_DELAY_MS + startTime;
+void closeWindowStart() {
+    printTx("closing window request...");
+    printTx("shutting down fan");
+    stopFan();
+    printTx("closing window...");
+    operationStartTime = millis();
+    operationStopTime = ACTUATOR_MAX_DELAY_MS + operationStartTime;
 
     analogWrite(ACTUATOR_LPWM, 255);
     analogWrite(ACTUATOR_RPWM, 0);
-
-    while (true) {
-        delay(50);
-
-        if (!hasCurrentFlowing(ACTUATOR_L_IS)) {
-            printTx("no current detected, halting actuator");
-            break;
-        }
-
-        if (millis() >= maxTime) {
-            printTx("WARNING: max delay reached for CLOSE window actuator.");
-            break;
-        }
-    }
-
-    analogWrite(ACTUATOR_RPWM, 0);
-    analogWrite(ACTUATOR_LPWM, 0);
-
-    printTx("done closing window");
 }
 
+bool shouldCurrentOperationContinue() {
+    switch (currentOpState) {
+        case OPEN_WINDOW:
+            return !limitSwitchTouched() && hasCurrentFlowing(ACTUATOR_R_IS);
+        case CLOSE_WINDOW:
+            return hasCurrentFlowing(ACTUATOR_L_IS);
+        case IDLING:
+            return true;
+    }
+}
 
 void startFan() {
     printTx("starting fan");
@@ -367,81 +381,71 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-void openVentilation() {
-    openWindow();
-    startFan();
-}
+// void closingStageUpdate() {
+//     if (currentStage == 0) {
+//         closeVentilation();
+//     } else {
+//         closeRollUp();
+//     }
+// }
+//
+// void openingStageUpdate() {
+//     if (currentStage == 1) {
+//         openVentilation();
+//     } else {
+//         openRollUp();
+//     }
+// }
+//
+// void doStageUpdate() {
+//     if (closingStages) {
+//         closingStageUpdate();
+//     } else {
+//         openingStageUpdate();
+//     }
+// }
 
-void closeVentilation() {
-    stopFan();
-    closeWindow();
-}
-
-void closingStageUpdate() {
-    if (currentStage == 0) {
-        closeVentilation();
-    } else {
-        closeRollUp();
-    }
-}
-
-void openingStageUpdate() {
-    if (currentStage == 1) {
-        openVentilation();
-    } else {
-        openRollUp();
-    }
-}
-
-void doStageUpdate() {
-    if (closingStages) {
-        closingStageUpdate();
-    } else {
-        openingStageUpdate();
-    }
-}
-
-void updateStageStatus(float currentTemp) {
-    // update the current stage of ventilation
-    unsigned long elapsedTime = millis() - stageStartTime;
-
-    if (elapsedTime - stageStartTime < STAGE_DURATION) {
-        // wait if stage wait time is not acheived
-        return;
-    }
-
-    float deltaCurrentVsStage = currentTemp - currentStageTemp;
-
-    if (deltaCurrentVsStage >= STAGE_DELTA_CELCIUS) {
-        // reached threshold to increase ventilation
-
-        if (currentStage < NB_STAGES) {
-            // max stage already acheived
-            return;
-        }
-        // Increase the current stage and reset the start time of the stage
-        currentStage++;
-        stageStartTime = elapsedTime;
-        currentStageTemp = currentTemp;
-        closingStages = false;
-        doStageUpdate();
-
-    } else if (deltaCurrentVsStage >= -STAGE_DELTA_CELCIUS) {
-        // reached threshold to decrease ventilation
-
-        if (currentStage == 0) {
-            // min stage already acheived
-            return;
-        }
-
-        // Decrease the current stage and reset the start time of the stage
-        currentStage--;
-        stageStartTime = elapsedTime;
-        currentStageTemp = currentTemp;
-        closingStages = true;
-        doStageUpdate();
-    }
-}
+// void updateStageStatus(float currentTemp) {
+//     // update the current stage of ventilation
+//     unsigned long elapsedTime = millis() - stageStartTime;
+//
+//     if (elapsedTime - stageStartTime < STAGE_DURATION) {
+//         // wait if stage wait time is not acheived
+//         return;
+//     }
+//
+//     float deltaCurrentVsStage = currentTemp - currentStageTemp;
+//
+//     if (deltaCurrentVsStage >= STAGE_DELTA_CELCIUS) {
+//         // reached threshold to increase ventilation
+//
+//         if (currentStage < NB_STAGES) {
+//             // max stage already acheived
+//             return;
+//         }
+//         // Increase the current stage and reset the start time of the stage
+//         currentStage++;
+//         stageStartTime = elapsedTime;
+//         currentStageTemp = currentTemp;
+//         closingStages = false;
+//         doStageUpdate();
+//
+//     } else if (deltaCurrentVsStage >= -STAGE_DELTA_CELCIUS) {
+//         // reached threshold to decrease ventilation
+//
+//         if (currentStage == 0) {
+//             // min stage already acheived
+//             return;
+//         }
+//
+//         // Decrease the current stage and reset the start time of the stage
+//         currentStage--;
+//         stageStartTime = elapsedTime;
+//         currentStageTemp = currentTemp;
+//         closingStages = true;
+//         doStageUpdate();
+//     }
+// }
 
 
 // float getExtTemperature() {
@@ -518,6 +522,17 @@ void handleConfigMenuKeyInput(char keyInput) {
           break;
         case VENTILATION:
           toggleOption(ventilationActivated);
+
+          // test code
+          if (ventilationActivated) {
+              currentOpState = OPEN_WINDOW;
+              openWindowStart();
+
+          } else {
+              currentOpState = CLOSE_WINDOW;
+              closeWindowStart();
+          }
+          ///
           break;
         case ROLLUP:
           toggleOption(rollupActivated);
@@ -603,6 +618,7 @@ void loop() {
     }
 
     handleDisplayState();
+    updateOperation();
 
     delay(50);
 }
