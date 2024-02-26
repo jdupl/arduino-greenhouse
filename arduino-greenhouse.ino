@@ -1,10 +1,11 @@
 // TODO
 
 // MUST write to eeprom settings
-// MUST open actuator untill limit switch is contacted
 // MUST calculate time to open rollups
 // MUST async operation of bts controls (don't lock UI)
 // MUST start up routine (close all systems)
+// MUST display current stage
+// MUST display current operation
 
 // NICE current sensing from bts controllers for better error detection
 // NICE track and display uptime
@@ -59,7 +60,15 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // Actuator controller pins and wiring colors
 #define ACTUATOR_RPWM 11  //green
 #define ACTUATOR_LPWM 10  // yellow
-#define ACTUATOR_LIMIT_SWITCH 25  // green INPUT PULLUP
+#define ACTUATOR_R_IS 0  //analog white
+#define ACTUATOR_L_IS 1  // analog grey
+
+// limit switch wiring
+// HIGH when untouched, LOW when touched
+// C pin GND
+// NO pin D25 pull-up
+// NC pin not connected
+#define ACTUATOR_LIMIT_SWITCH 23  // green INPUT PULLUP
 
 
 // 120VAC fan relay pin and wiring color
@@ -82,7 +91,10 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // 5: open rollup fully
 
 #define ROLUP_DELAY_MS 30000
-#define ACTUATOR_DELAY_MS 10000
+
+#define ACTUATOR_MAX_DELAY_MS 60000
+#define ACTUATOR_IS_VAl_THRESHOLD 30 // gt than this threshold means current is flowing
+
 #define NB_STAGES 6
 #define STAGE_DURATION 300000 // Duration of each stage in milliseconds (5 minutes)
 #define STAGE_DELTA_CELCIUS 1
@@ -257,29 +269,93 @@ void closeRollUp() {
     analogWrite(ROLLUP_LPWM, 0);
 }
 
+bool limitSwitchTouched() {
+    return digitalRead(ACTUATOR_LIMIT_SWITCH) == LOW;
+}
+
+int readAnalogPinSample(int pin, int millis) {
+    unsigned long startTime = micros();
+    unsigned long sum = 0;
+    int numReadings = 0;
+    int micros = millis * 1000;
+
+    // Loop until sampling window is over
+    while (micros() - startTime < micros) {
+        sum += analogRead(pin);
+        numReadings++;
+    }
+
+    return sum / numReadings;
+}
+
+bool hasCurrentFlowing(int pin) {
+    // sample analog input for 10ms
+    return readAnalogPinSample(pin, 10) > ACTUATOR_IS_VAl_THRESHOLD;
+}
+
 void openWindow() {
     printTx("opening window...");
+
+    unsigned long startTime = millis();
+    unsigned long maxTime = ACTUATOR_MAX_DELAY_MS + startTime;
+
     analogWrite(ACTUATOR_RPWM, 255);
     analogWrite(ACTUATOR_LPWM, 0);
 
-    delay(ACTUATOR_DELAY_MS);
-    printTx("done opening window");
+    while (true) {
+        delay(50);
+
+        if (!hasCurrentFlowing(ACTUATOR_R_IS)) {
+            printTx("no current detected, halting actuator");
+            break;
+        }
+
+        if (limitSwitchTouched()) {
+            printTx("LIMIT SWITCH reached");
+            break;
+        }
+
+        if (millis() >= maxTime) {
+            printTx("WARNING: max delay reached for OPEN window actuator.");
+            break;
+        }
+    }
 
     analogWrite(ACTUATOR_RPWM, 0);
     analogWrite(ACTUATOR_LPWM, 0);
+
+    printTx("done opening window");
 }
 
 void closeWindow() {
     printTx("closing window...");
-    analogWrite(ACTUATOR_RPWM, 0);
-    analogWrite(ACTUATOR_LPWM, 255);
 
-    delay(ACTUATOR_DELAY_MS);
-    printTx("done closing window");
+    unsigned long startTime = millis();
+    unsigned long maxTime = ACTUATOR_MAX_DELAY_MS + startTime;
+
+    analogWrite(ACTUATOR_LPWM, 255);
+    analogWrite(ACTUATOR_RPWM, 0);
+
+    while (true) {
+        delay(50);
+
+        if (!hasCurrentFlowing(ACTUATOR_L_IS)) {
+            printTx("no current detected, halting actuator");
+            break;
+        }
+
+        if (millis() >= maxTime) {
+            printTx("WARNING: max delay reached for CLOSE window actuator.");
+            break;
+        }
+    }
 
     analogWrite(ACTUATOR_RPWM, 0);
     analogWrite(ACTUATOR_LPWM, 0);
+
+    printTx("done closing window");
 }
+
 
 void startFan() {
     printTx("starting fan");
@@ -518,7 +594,7 @@ void updateSensorsIfNeeded() {
 
 void loop() {
     updateSensorsIfNeeded();
-    // Check for keypad input
+
     char key = keypad.getKey();
 
     if (key != NO_KEY) {
@@ -531,13 +607,22 @@ void loop() {
     delay(50);
 }
 
+void pinSetup() {
+    // pinMode(FAN_RELAY, OUTPUT);
+
+    pinMode(ACTUATOR_LPWM, OUTPUT);
+    pinMode(ACTUATOR_RPWM, OUTPUT);
+    pinMode(ACTUATOR_L_IS, INPUT);
+    pinMode(ACTUATOR_R_IS, INPUT);
+    pinMode(ACTUATOR_LIMIT_SWITCH, INPUT_PULLUP);
+}
+
 
 void setup() {
     Serial.begin(9600);
 
     printTx("booting up");
-
-    pinMode(FAN_RELAY, OUTPUT);
+    pinSetup();
 
     dht.begin();
 
@@ -547,5 +632,4 @@ void setup() {
     }
 
     displayState = STATS;
-
 }
