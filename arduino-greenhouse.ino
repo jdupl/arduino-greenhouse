@@ -106,13 +106,13 @@ unsigned long stageStartTime = 0;
 
 #define SETTINGS_ADR 0
 // settings saved to eeprom
-Struct Settings = {
+struct Settings {
     bool valid;
     float maxDesiredTemp;
     bool stageFreeze;
     bool ventilationActivated;
     bool rollupActivated;
-}
+};
 Settings settings;
 
 float currentTemp = -1;
@@ -120,6 +120,7 @@ float currentHumidity = -1;
 bool dht22Working = true;
 unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
 float currentStageTemp = 0;
+int stageJump = -1;
 
 // Operation state (async operation of motors)
 enum OpState {CLOSE_WINDOW_OP, OPEN_WINDOW_OP, ROLLUP_OP, ROLLDOWN_OP, IDLING};
@@ -701,8 +702,8 @@ Settings readSettingsEEPROM() {
         false, //  settings.stageFreeze
         true, // settings.ventilationActivated
         true // settings.rollupActivated
-    }
-    return defaultSettings;
+    };
+    return defaults;
 }
 
 void pinSetup() {
