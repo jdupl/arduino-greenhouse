@@ -1,7 +1,7 @@
 // TODO
 
 // MUST write to eeprom settings
-// MUST calculate time to open rollups
+
 // MUST start up routine (close all systems)
 // MUST display current stage
 // MUST display current operation
@@ -36,6 +36,8 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // rollup controller pins and wiring colors
 #define ROLLUP_RPWM 13  // green
 #define ROLLUP_LPWM 12  // yellow
+#define ROLLUP_R_IS 3  // analog blue
+#define ROLLUP_L_IS 2  // analog purple
 
 // OLED pins and wiring colors
 #define OLED_SDA 20     // green
@@ -89,7 +91,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // 4: open rollup 3/4
 // 5: open rollup fully
 
-#define ROLUP_DELAY_MS 30000
+#define ROLLUP_STAGE_DELAY_MS 30000
 
 #define ACTUATOR_MAX_DELAY_MS 60000
 #define ACTUATOR_IS_VAl_THRESHOLD 30 // gt than this threshold means current is flowing
@@ -116,14 +118,14 @@ float currentStageTemp = 0;
 
 
 // Stage
-enum Stage {VENT_CLOSED, VENT_OPEN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
-Stage currentStage = VENT_CLOSED;
+enum Stage {WINDOW_CLOSED, WINDOW_OPEN, FAN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
+Stage currentStage = WINDOW_CLOSED;
 unsigned long stageStartTime = 0;
 // unsigned long stageStopTime = 0;
 
 
 // Operation state (async operation of motors)
-enum OpState {CLOSE_WINDOW, OPEN_WINDOW, ROLLUP_OP, ROLLDOWN_OP, IDLING};
+enum OpState {CLOSE_WINDOW_OP, OPEN_WINDOW_OP, ROLLUP_OP, ROLLDOWN_OP, IDLING};
 OpState currentOperation = IDLING;
 unsigned long operationStartTime = 0;
 unsigned long operationStopTime = 0;
@@ -271,27 +273,46 @@ void updateOperation() {
     }
 }
 
-void openRollUp() {
-    printTx("opening rollup...");
-    analogWrite(ROLLUP_RPWM, 255);
-    analogWrite(ROLLUP_LPWM, 0);
-
-    delay(ROLUP_DELAY_MS);
-    printTx("done opening rollup");
-
+void rollupStop() {
+    printTx("done rollup operation");
     analogWrite(ROLLUP_RPWM, 0);
     analogWrite(ROLLUP_LPWM, 0);
 }
 
-void closeRollUp() {
-    printTx("closing rollup...");
+void openRollUpAsync(bool fullyOpen) {
+    printTx("opening rollup async...");
+    currentOperation = ROLLUP_OP;
+    operationStartTime = millis();
+
+    if (!fullyOpen) {
+        operationStopTime = ROLLUP_STAGE_DELAY_MS + operationStartTime;
+    } else {
+        operationStopTime = ROLLUP_STAGE_DELAY_MS * 4 + operationStartTime;
+    }
+
+    printTx(String(operationStartTime));
+    printTx(String(operationStopTime));
+
     analogWrite(ROLLUP_RPWM, 0);
     analogWrite(ROLLUP_LPWM, 255);
+}
 
-    delay(ROLUP_DELAY_MS);
-    printTx("done closing rollup");
+void closeRollUpAsync(bool fullyClose) {
+    printTx("closing rollup async...");
+    currentOperation = ROLLDOWN_OP;
 
-    analogWrite(ROLLUP_RPWM, 0);
+    operationStartTime = millis();
+
+    if (!fullyClose) {
+        operationStopTime = ROLLUP_STAGE_DELAY_MS + operationStartTime;
+    } else {
+        operationStopTime = ROLLUP_STAGE_DELAY_MS * 4 + operationStartTime;
+    }
+
+    printTx(String(operationStartTime));
+    printTx(String(operationStopTime));
+
+    analogWrite(ROLLUP_RPWM, 255);
     analogWrite(ROLLUP_LPWM, 0);
 }
 
@@ -321,24 +342,28 @@ bool hasCurrentFlowing(int pin) {
 
 void stopCurrentOperation() {
     switch (currentOperation) {
-        case OPEN_WINDOW:
+        case OPEN_WINDOW_OP:
             windowStop();
-            startFan();
-        case CLOSE_WINDOW:
+        case CLOSE_WINDOW_OP:
             windowStop();
             break;
         case ROLLUP_OP:
+            rollupStop();
+            break;
         case ROLLDOWN_OP:
-            printTx("TO IMPLEMENT");
+            rollupStop();
             break;
     }
     currentOperation = IDLING;
 }
 
-void openWindowStart() {
+void openWindowAsync() {
     printTx("opening window...");
+    currentOperation = OPEN_WINDOW_OP;
+
     operationStartTime = millis();
     operationStopTime = ACTUATOR_MAX_DELAY_MS + operationStartTime;
+
     printTx(String(operationStartTime));
     printTx(String(operationStopTime));
 
@@ -352,11 +377,10 @@ void windowStop() {
     analogWrite(ACTUATOR_LPWM, 0);
 }
 
-void closeWindowStart() {
+void closeWindowAsync() {
     printTx("closing window request...");
-    printTx("shutting down fan");
-    stopFan();
-    printTx("closing window...");
+
+    currentOperation = CLOSE_WINDOW_OP;
     operationStartTime = millis();
     operationStopTime = ACTUATOR_MAX_DELAY_MS + operationStartTime;
 
@@ -366,10 +390,14 @@ void closeWindowStart() {
 
 bool shouldCurrentOperationContinue() {
     switch (currentOperation) {
-        case OPEN_WINDOW:
+        case OPEN_WINDOW_OP:
             return !limitSwitchTouched() && hasCurrentFlowing(ACTUATOR_R_IS);
-        case CLOSE_WINDOW:
+        case CLOSE_WINDOW_OP:
             return hasCurrentFlowing(ACTUATOR_L_IS);
+        case ROLLUP_OP:
+            return hasCurrentFlowing(ROLLUP_L_IS);
+        case ROLLDOWN_OP:
+            return hasCurrentFlowing(ROLLUP_R_IS);
         case IDLING:
             return true;
     }
@@ -389,39 +417,67 @@ void doStageUpdate(float currentTemp, bool closing) {
     currentStageTemp = currentTemp;
     closingStages = closing;
     stageStartTime = millis();
+    Stage oldStage = currentStage;
 
     if (closing) {
-        switch (currentStage) {
-            case VENT_CLOSED :
+        switch (oldStage) {
+            case WINDOW_CLOSED :
                 printTx("already at min stage");
                 break;
-            case VENT_OPEN :
-                currentStage = VENT_CLOSED;
-                closeWindowStart();
+            case WINDOW_OPEN :
+                currentStage = WINDOW_CLOSED;
+                closeWindowAsync();
+                break;
+            case FAN :
+                currentStage = WINDOW_OPEN;
+                stopFan();
+                break;
             case ROLLUP_1 :
-                currentStage = VENT_OPEN;
+                currentStage = FAN;
+                closeRollUpAsync(true);
+                break;
             case ROLLUP_2 :
                 currentStage = ROLLUP_1;
+                closeRollUpAsync(false);
+                break;
             case ROLLUP_3 :
                 currentStage = ROLLUP_2;
+                closeRollUpAsync(false);
+                break;
             case ROLLUP_4:
                 currentStage = ROLLUP_3;
+                closeRollUpAsync(false);
+                break;
         }
     } else {
-        switch (currentStage) {
-            case VENT_CLOSED :
-                currentStage = VENT_OPEN;
-                openWindowStart();
-            case VENT_OPEN :
+        switch (oldStage) {
+            case WINDOW_CLOSED :
+                currentStage = WINDOW_OPEN;
+                openWindowAsync();
+                break;
+            case WINDOW_OPEN :
+                currentStage = FAN;
+                startFan();
+                break;
+            case FAN :
                 currentStage = ROLLUP_1;
+                openRollUpAsync(false);
+                break;
             case ROLLUP_1 :
                 currentStage = ROLLUP_2;
+                openRollUpAsync(false);
+                break;
             case ROLLUP_2 :
                 currentStage = ROLLUP_3;
+                openRollUpAsync(false);
+                break;
             case ROLLUP_3 :
                 currentStage = ROLLUP_4;
+                openRollUpAsync(true);
+                break;
             case ROLLUP_4:
                 printTx("already at max stage");
+                break;
         }
     }
 }
@@ -523,12 +579,12 @@ void handleConfigMenuKeyInput(char keyInput) {
 
           // test code
           if (ventilationActivated) {
-              currentOperation = OPEN_WINDOW;
-              openWindowStart();
+              currentOperation = OPEN_WINDOW_OP;
+              openWindowAsync();
 
           } else {
-              currentOperation = CLOSE_WINDOW;
-              closeWindowStart();
+              currentOperation = CLOSE_WINDOW_OP;
+              closeWindowAsync();
           }
           ///
           break;
