@@ -1,18 +1,16 @@
 // TODO
 
-// MUST write to eeprom settings
-
+// MUST stage jump
 // MUST start up routine (close all systems)
-// MUST display current stage
-// MUST display current operation
 
+// NICE display current stage
+// NICE display current operation
 // NICE current sensing from bts controllers for better error detection
 // NICE track and display uptime
 // NICE track and display min/max temps
 // NICE furnace control
 
-
-
+#include <EEPROM.h>
 #include <DHT.h>
 //#include <OneWire.h>
 //#include <DallasTemperature.h>
@@ -91,6 +89,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // 4: open rollup 3/4
 // 5: open rollup fully
 
+// time to open rollup 1/4
 #define ROLLUP_STAGE_DELAY_MS 30000
 
 #define ACTUATOR_MAX_DELAY_MS 60000
@@ -99,30 +98,28 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define STAGE_CHANGE_WAIT_MS 120000 // Duration between automatic stage changes (2 minutes)
 #define STAGE_DELTA_CELCIUS 1
 
-float currentTemp = -1;
-float currentHumidity = -1;
-bool dht22Working = true;
-
-float minDesiredTemp = 24.0;
-float maxDesiredTemp = 26.0;
-
-int stageJump = -1; // set to -1 when stage has been jumped
-bool stageFreeze = false; // true will avoid changing stages to lock to the current one
-bool ventilationActivated = true;
-bool rollupActivated = true;
-
-unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
-
-bool closingStages = false; // Flag to indicate if stages are closing
-float currentStageTemp = 0;
-
-
 // Stage
 enum Stage {WINDOW_CLOSED, WINDOW_OPEN, FAN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
 Stage currentStage = WINDOW_CLOSED;
 unsigned long stageStartTime = 0;
 // unsigned long stageStopTime = 0;
 
+#define SETTINGS_ADR 0
+// settings saved to eeprom
+Struct Settings = {
+    bool valid;
+    float maxDesiredTemp;
+    bool stageFreeze;
+    bool ventilationActivated;
+    bool rollupActivated;
+}
+Settings settings;
+
+float currentTemp = -1;
+float currentHumidity = -1;
+bool dht22Working = true;
+unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
+float currentStageTemp = 0;
 
 // Operation state (async operation of motors)
 enum OpState {CLOSE_WINDOW_OP, OPEN_WINDOW_OP, ROLLUP_OP, ROLLDOWN_OP, IDLING};
@@ -132,10 +129,10 @@ unsigned long operationStopTime = 0;
 char lastChar = 'x';
 
 // Configuration menu options
-enum ConfigOption { MIN_TEMP, MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
-#define CONFIG_OPTION_COUNT 6 // UPDATE MANUALLY THIS COUNT
+enum ConfigOption { MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
+#define CONFIG_OPTION_COUNT 5 // UPDATE MANUALLY THIS COUNT
 
-ConfigOption currentConfigOption = MIN_TEMP;
+ConfigOption currentConfigOption = MAX_TEMP;
 
 // Display state
 enum DisplayState { CONFIG_MENU, STATS };
@@ -203,9 +200,8 @@ float promptNumericInput(const char* prompt, float currentValue) {
 
 void displayConfigMenu() {
   display.clearDisplay();
-  display.setTextSize(1); // Draw 2X-scale text
+  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-
 
   int numOptions = 4; // Number of configuration options to display at a time
   int startOption = static_cast<int>(currentConfigOption) - 1;
@@ -217,13 +213,13 @@ void displayConfigMenu() {
     ConfigOption option = static_cast<ConfigOption>(startOption + i);
 
     switch (option) {
-      case MIN_TEMP:
-        display.print("Set Min Temp: ");
-        display.print(minDesiredTemp);
-        break;
+      // case MIN_TEMP:
+      //   display.print("Set Min Temp: ");
+      //   display.print(minDesiredTemp);
+      //   break;
       case MAX_TEMP:
         display.print("Set Max Temp: ");
-        display.print(maxDesiredTemp);
+        display.print(settings.maxDesiredTemp);
         break;
       case STAGE_JUMP:
         display.print("Jump stage: ");
@@ -231,15 +227,15 @@ void displayConfigMenu() {
         break;
       case STAGE_FREEZE:
         display.print("Freeze stages: ");
-        display.print(stageFreeze ? "On" : "Off");
+        display.print(settings.stageFreeze ? "On" : "Off");
         break;
       case VENTILATION:
         display.print("Ventilation: ");
-        display.print(ventilationActivated ? "On" : "Off");
+        display.print(settings.ventilationActivated ? "On" : "Off");
         break;
       case ROLLUP:
         display.print("Rollup: ");
-        display.print(rollupActivated ? "On" : "Off");
+        display.print(settings.rollupActivated ? "On" : "Off");
         break;
     }
   }
@@ -257,7 +253,7 @@ void printTx(String chars) {
     }
 }
 
-void updateOperation() {
+void checkIfOperationCompleted() {
     // Operation state (async operation of motors)
     if (currentOperation == IDLING) {
         // ignore
@@ -415,7 +411,6 @@ void stopFan() {
 
 void doStageUpdate(float currentTemp, bool closing) {
     currentStageTemp = currentTemp;
-    closingStages = closing;
     stageStartTime = millis();
     Stage oldStage = currentStage;
 
@@ -482,7 +477,7 @@ void doStageUpdate(float currentTemp, bool closing) {
     }
 }
 
-void updateStageStatus() {
+void checkForStageChange() {
     // TODO check for early stage change if temp changed too much
 
     unsigned long elapsedTime = millis() - stageStartTime;
@@ -492,10 +487,10 @@ void updateStageStatus() {
     }
 
 
-    if (currentTemp > maxDesiredTemp) {
+    if (currentTemp > settings.maxDesiredTemp) {
         // reached min threshold to increase ventilation
         doStageUpdate(currentTemp, false);
-    } else if (currentTemp <= maxDesiredTemp) {
+    } else if (currentTemp <= settings.maxDesiredTemp) {
         // reached threshold to decrease ventilation
         doStageUpdate(currentTemp, true);
     }
@@ -560,36 +555,27 @@ void handleConfigMenuKeyInput(char keyInput) {
       break;
     case '#': // Choose option
         switch (currentConfigOption) {
-        case MIN_TEMP:
-            minDesiredTemp = promptNumericInput("Enter Min Temp: " , minDesiredTemp);
-            break;
         case MAX_TEMP:
-            maxDesiredTemp = promptNumericInput("Enter Max Temp: ", maxDesiredTemp);
+            settings.maxDesiredTemp = promptNumericInput("Enter Max Temp: ", settings.maxDesiredTemp);
+            saveSettigsEEPROM();
             break;
         case STAGE_JUMP:
             stageJump = static_cast<int>(promptNumericInput(
                 "0 closed 1 fans 2 1/4 rollup.. 4 100% rollup"
                 , static_cast<float>(stageJump)));
+            // TODO SET STAGE
             break;
         case STAGE_FREEZE:
-          toggleOption(stageFreeze);
+          toggleOption(settings.stageFreeze);
+          saveSettigsEEPROM();
           break;
         case VENTILATION:
-          toggleOption(ventilationActivated);
-
-          // test code
-          if (ventilationActivated) {
-              currentOperation = OPEN_WINDOW_OP;
-              openWindowAsync();
-
-          } else {
-              currentOperation = CLOSE_WINDOW_OP;
-              closeWindowAsync();
-          }
-          ///
+          toggleOption(settings.ventilationActivated);
+          saveSettigsEEPROM();
           break;
         case ROLLUP:
-          toggleOption(rollupActivated);
+          toggleOption(settings.rollupActivated);
+          saveSettigsEEPROM();
           break;
       }
 
@@ -629,8 +615,6 @@ void displayDHT22Error() {
     display.setCursor(10, 0);
 
     display.println("DHT22 FATAL ERROR");
-
-
 }
 
 void displayStats() {
@@ -686,20 +670,39 @@ void handleUserKeyAndDisplay() {
 }
 
 void loop() {
-    // renew sensor data
     updateSensorsIfNeeded();
-
     handleUserKeyAndDisplay();
 
+    if (currentOperation == IDLING && !settings.stageFreeze) {
+        checkForStageChange();
+    } else if (currentOperation != IDLING) {
+        checkIfOperationCompleted();
+    }
+    delay(50);
+}
 
-    if (currentOperation == IDLING) {
-        updateStageStatus();
-    } else {
-        // stop current operation if timer has expired
-        updateOperation();
+void saveSettigsEEPROM() {
+    EEPROM.put(SETTINGS_ADR, settings);
+}
+
+Settings readSettingsEEPROM() {
+    Settings eepromSettings;
+    EEPROM.get(SETTINGS_ADR, eepromSettings);
+
+    if (eepromSettings.valid) {
+        printTx("Got valid settings from EEPROM");
+        return eepromSettings;
     }
 
-    delay(50);
+    printTx("!! No valid settings from EEPROM !! Switching to defaults.");
+    Settings defaults = {
+        true, // valid
+        26.0f, // settings.maxDesiredTemp
+        false, //  settings.stageFreeze
+        true, // settings.ventilationActivated
+        true // settings.rollupActivated
+    }
+    return defaultSettings;
 }
 
 void pinSetup() {
@@ -709,22 +712,27 @@ void pinSetup() {
     pinMode(ACTUATOR_RPWM, OUTPUT);
     pinMode(ACTUATOR_L_IS, INPUT);
     pinMode(ACTUATOR_R_IS, INPUT);
+
+    pinMode(ROLLUP_LPWM, OUTPUT);
+    pinMode(ROLLUP_RPWM, OUTPUT);
+    pinMode(ROLLUP_L_IS, INPUT);
+    pinMode(ROLLUP_R_IS, INPUT);
+
     pinMode(ACTUATOR_LIMIT_SWITCH, INPUT_PULLUP);
 }
 
-
 void setup() {
     Serial.begin(9600);
-
     printTx("booting up");
+
     pinSetup();
-
-    dht.begin();
-
     if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
         Serial.println(F("SSD1306 allocation failed"));
         for(;;);
     }
+    dht.begin();
+
+    settings = readSettingsEEPROM();
 
     displayState = STATS;
     currentOperation = IDLING;
