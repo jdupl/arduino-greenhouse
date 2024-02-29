@@ -1,6 +1,5 @@
 // TODO
 
-// MUST stage jump
 // MUST start up routine (close all systems)
 
 // NICE display current stage
@@ -37,20 +36,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 #define ROLLUP_R_IS 3  // analog blue
 #define ROLLUP_L_IS 2  // analog purple
 
-// OLED pins and wiring colors
-#define OLED_SDA 20     // green
-#define OLED_SCL 21     // yellow
 
-
-// Keypad pins and wiring colors
-#define R1 41       // yellow
-#define R2 40       // red
-#define R3 39       // black
-#define R4 38       // white
-#define C1 37       // brown
-#define C2 36       // green
-#define C3 35       // blue
-#define C4 34       // orange
 
 
 // actuator notes
@@ -69,184 +55,34 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // NC pin not connected
 #define ACTUATOR_LIMIT_SWITCH 23  // green INPUT PULLUP
 
-
 // 120VAC fan relay pin and wiring color
 #define FAN_RELAY 24      // brown
 
 
 #define DHT_TYPE DHT22
-#define TICK_MS // tick length for keypad
 #define TICK_TEMP_MS 10000 // tick length for temperature update
 #define DEBUG_EN 1 // set to 1 or 0
 
 
-
-// stages
-// 0: closed
-// 1 : open ventilation
-// 2: open rollup 1/4
-// 3: open rollup 1/2
-// 4: open rollup 3/4
-// 5: open rollup fully
-
-// time to open rollup 1/4
-#define ROLLUP_STAGE_DELAY_MS 30000
-
-#define ACTUATOR_MAX_DELAY_MS 60000
-#define ACTUATOR_IS_VAl_THRESHOLD 30 // gt than this threshold means current is flowing
-
-#define STAGE_CHANGE_WAIT_MS 120000 // Duration between automatic stage changes (2 minutes)
-#define STAGE_DELTA_CELCIUS 1
-
-// Stage
-enum Stage {WINDOW_CLOSED, WINDOW_OPEN, FAN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
-Stage currentStage = WINDOW_CLOSED;
-unsigned long stageStartTime = 0;
-// unsigned long stageStopTime = 0;
-
-#define SETTINGS_ADR 0
 // settings saved to eeprom
-struct Settings {
-    bool valid;
-    float maxDesiredTemp;
-    bool stageFreeze;
-    bool ventilationActivated;
-    bool rollupActivated;
-};
-Settings settings;
 
 float currentTemp = -1;
 float currentHumidity = -1;
 bool dht22Working = true;
 unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
 float currentStageTemp = 0;
-int stageJump = -1;
+int stageJumpTargetIndex = -1;
 
-// Operation state (async operation of motors)
-enum OpState {CLOSE_WINDOW_OP, OPEN_WINDOW_OP, ROLLUP_OP, ROLLDOWN_OP, IDLING};
-OpState currentOperation = IDLING;
+// Operation (async operation of motors)
+enum Operation {CLOSE_WINDOW_OP, OPEN_WINDOW_OP, ROLLUP_OP, ROLLDOWN_OP, IDLING};
+Operation currentOperation = IDLING;
 unsigned long operationStartTime = 0;
 unsigned long operationStopTime = 0;
-char lastChar = 'x';
-
-// Configuration menu options
-enum ConfigOption { MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
-#define CONFIG_OPTION_COUNT 5 // UPDATE MANUALLY THIS COUNT
-
-ConfigOption currentConfigOption = MAX_TEMP;
-
-// Display state
-enum DisplayState { CONFIG_MENU, STATS };
-DisplayState displayState = STATS;
-
-char hexaKeys[4][4] = {
-  {'1', '2', '3', 'A'},
-  {'4', '5', '6', 'B'},
-  {'7', '8', '9', 'C'},
-  {'*', '0', '#', 'D'}
-};
-
-byte rowPins[4] = {R1, R2, R3, R4};
-byte colPins[4] = {C1, C2, C3, C4};
-Keypad keypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, 4, 4);
 
 DHT dht(DHT_PIN, DHT_TYPE);
 
 // OneWire oneWire(ONE_WIRE_BUS);
 //DallasTemperature sensors(&oneWire);
-
-// U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-void scrollMenu(int direction) {
-  currentConfigOption = static_cast<ConfigOption>((currentConfigOption + direction + CONFIG_OPTION_COUNT) % CONFIG_OPTION_COUNT);
-}
-
-void toggleOption(bool& option) {
-  option = !option;
-}
-
-void promptNumericInputDisplay(const char* prompt, String displayValue) {
-    display.clearDisplay();
-
-    display.setTextSize(1); // Draw 2X-scale text
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 0);
-
-    display.println(prompt);
-
-    display.print("Value: ");
-    display.println(displayValue);
-    display.display();
-}
-
-float promptNumericInput(const char* prompt, float currentValue) {
-  String input = "";
-  promptNumericInputDisplay(prompt, String(currentValue));
-
-  while (true) {
-    char key = keypad.getKey();
-    if (key != NO_KEY) {
-      if (key == '#') {
-        return input.toFloat();
-      } else if (key == '*') {
-        return currentValue; // Cancel input
-      } else if (isdigit(key) || key == '.') {
-        input += key;
-      }
-      promptNumericInputDisplay(prompt, input);
-    }
-    delay(50);
-  }
-}
-
-void displayConfigMenu() {
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-
-  int numOptions = 4; // Number of configuration options to display at a time
-  int startOption = static_cast<int>(currentConfigOption) - 1;
-  if (startOption < 0) startOption = 0;
-  if (startOption + numOptions > CONFIG_OPTION_COUNT) startOption = CONFIG_OPTION_COUNT - numOptions;
-
-  for (int i = 0; i < numOptions; i++) {
-    display.setCursor(10, 10 + (i * 15));
-    ConfigOption option = static_cast<ConfigOption>(startOption + i);
-
-    switch (option) {
-      // case MIN_TEMP:
-      //   display.print("Set Min Temp: ");
-      //   display.print(minDesiredTemp);
-      //   break;
-      case MAX_TEMP:
-        display.print("Set Max Temp: ");
-        display.print(settings.maxDesiredTemp);
-        break;
-      case STAGE_JUMP:
-        display.print("Jump stage: ");
-        display.print(stageJump);
-        break;
-      case STAGE_FREEZE:
-        display.print("Freeze stages: ");
-        display.print(settings.stageFreeze ? "On" : "Off");
-        break;
-      case VENTILATION:
-        display.print("Ventilation: ");
-        display.print(settings.ventilationActivated ? "On" : "Off");
-        break;
-      case ROLLUP:
-        display.print("Rollup: ");
-        display.print(settings.rollupActivated ? "On" : "Off");
-        break;
-    }
-  }
-
-  // Display selector
-  display.setCursor(0, 10 + ((currentConfigOption - startOption) * 15));
-  display.print(">");
-
-  display.display();
-}
 
 void printTx(String chars) {
     if (DEBUG_EN == 1) {
@@ -410,94 +246,6 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-void doStageUpdate(float currentTemp, bool closing) {
-    currentStageTemp = currentTemp;
-    stageStartTime = millis();
-    Stage oldStage = currentStage;
-
-    if (closing) {
-        switch (oldStage) {
-            case WINDOW_CLOSED :
-                printTx("already at min stage");
-                break;
-            case WINDOW_OPEN :
-                currentStage = WINDOW_CLOSED;
-                closeWindowAsync();
-                break;
-            case FAN :
-                currentStage = WINDOW_OPEN;
-                stopFan();
-                break;
-            case ROLLUP_1 :
-                currentStage = FAN;
-                closeRollUpAsync(true);
-                break;
-            case ROLLUP_2 :
-                currentStage = ROLLUP_1;
-                closeRollUpAsync(false);
-                break;
-            case ROLLUP_3 :
-                currentStage = ROLLUP_2;
-                closeRollUpAsync(false);
-                break;
-            case ROLLUP_4:
-                currentStage = ROLLUP_3;
-                closeRollUpAsync(false);
-                break;
-        }
-    } else {
-        switch (oldStage) {
-            case WINDOW_CLOSED :
-                currentStage = WINDOW_OPEN;
-                openWindowAsync();
-                break;
-            case WINDOW_OPEN :
-                currentStage = FAN;
-                startFan();
-                break;
-            case FAN :
-                currentStage = ROLLUP_1;
-                openRollUpAsync(false);
-                break;
-            case ROLLUP_1 :
-                currentStage = ROLLUP_2;
-                openRollUpAsync(false);
-                break;
-            case ROLLUP_2 :
-                currentStage = ROLLUP_3;
-                openRollUpAsync(false);
-                break;
-            case ROLLUP_3 :
-                currentStage = ROLLUP_4;
-                openRollUpAsync(true);
-                break;
-            case ROLLUP_4:
-                printTx("already at max stage");
-                break;
-        }
-    }
-}
-
-void checkForStageChange() {
-    // TODO check for early stage change if temp changed too much
-
-    unsigned long elapsedTime = millis() - stageStartTime;
-    if (elapsedTime - stageStartTime < STAGE_CHANGE_WAIT_MS) {
-        printTx("Stage change must wait a bit...");
-        return;
-    }
-
-
-    if (currentTemp > settings.maxDesiredTemp) {
-        // reached min threshold to increase ventilation
-        doStageUpdate(currentTemp, false);
-    } else if (currentTemp <= settings.maxDesiredTemp) {
-        // reached threshold to decrease ventilation
-        doStageUpdate(currentTemp, true);
-    }
-}
-
-
 // float getExtTemperature() {
 //     sensors.requestTemperatures();
 //     float temp = sensors.getTempCByIndex(0);
@@ -532,125 +280,6 @@ void updateTemp() {
     }
 }
 
-void handleStatsKeyInput(char keyInput) {
-  switch (keyInput) {
-    case '#':
-      displayState = CONFIG_MENU;
-      break;
-  }
-}
-
-void handleConfigMenuKeyInput(char keyInput) {
-  switch (keyInput) {
-    case 'A': // Scroll up
-      scrollMenu(-1);
-      displayConfigMenu();
-      break;
-    case 'B': // Scroll down
-      scrollMenu(1);
-      displayConfigMenu();
-      break;
-    case '*': // back to stats
-      displayState = STATS;
-      displayStats();
-      break;
-    case '#': // Choose option
-        switch (currentConfigOption) {
-        case MAX_TEMP:
-            settings.maxDesiredTemp = promptNumericInput("Enter Max Temp: ", settings.maxDesiredTemp);
-            saveSettigsEEPROM();
-            break;
-        case STAGE_JUMP:
-            stageJump = static_cast<int>(promptNumericInput(
-                "0 closed 1 fans 2 1/4 rollup.. 4 100% rollup"
-                , static_cast<float>(stageJump)));
-            // TODO SET STAGE
-            break;
-        case STAGE_FREEZE:
-          toggleOption(settings.stageFreeze);
-          saveSettigsEEPROM();
-          break;
-        case VENTILATION:
-          toggleOption(settings.ventilationActivated);
-          saveSettigsEEPROM();
-          break;
-        case ROLLUP:
-          toggleOption(settings.rollupActivated);
-          saveSettigsEEPROM();
-          break;
-      }
-
-      displayConfigMenu();
-      break;
-  }
-}
-
-void handleKeyInput(char keyInput) {
-  switch (displayState) {
-    case STATS:
-      handleStatsKeyInput(keyInput);
-      break;
-    case CONFIG_MENU:
-      handleConfigMenuKeyInput(keyInput);
-      break;
-  }
-}
-
-void displayDHT22() {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 0);
-
-    display.print("T: ");
-    display.println(currentTemp);
-
-    display.print("H: ");
-    display.println(currentHumidity);
-}
-
-void displayDHT22Error() {
-    display.clearDisplay();
-    display.setTextSize(2);
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 0);
-
-    display.println("DHT22 FATAL ERROR");
-}
-
-void displayStats() {
-  if (dht22Working) {
-      displayDHT22();
-  } else {
-      displayDHT22Error();
-  }
-
-  display.print("stage: ");
-  display.println(String(currentStage));
-
-  if (currentOperation != IDLING) {
-      display.print("Op... ");
-      char c = '+';
-      if (lastChar == '+') {
-          c = 'x';
-          lastChar = 'x';
-      } else {
-          lastChar = '+';
-      }
-      display.print(c);
-
-  }
-  display.display();
-}
-
-void handleDisplayState() {
-  if (displayState == STATS) {
-    displayStats();
-  } else {
-    displayConfigMenu();
-  }
-}
-
 void updateSensorsIfNeeded() {
     unsigned long elapsedTimeSinceTempTick = millis() - sensorLastTickTime;
     // float tempExt = getExtTemperature();
@@ -658,16 +287,6 @@ void updateSensorsIfNeeded() {
       updateTemp();
       sensorLastTickTime = millis();
     }
-}
-
-void handleUserKeyAndDisplay() {
-    char key = keypad.getKey();
-
-    if (key != NO_KEY) {
-        handleKeyInput(key);
-    }
-
-    handleDisplayState();
 }
 
 void loop() {
@@ -680,30 +299,6 @@ void loop() {
         checkIfOperationCompleted();
     }
     delay(50);
-}
-
-void saveSettigsEEPROM() {
-    EEPROM.put(SETTINGS_ADR, settings);
-}
-
-Settings readSettingsEEPROM() {
-    Settings eepromSettings;
-    EEPROM.get(SETTINGS_ADR, eepromSettings);
-
-    if (eepromSettings.valid) {
-        printTx("Got valid settings from EEPROM");
-        return eepromSettings;
-    }
-
-    printTx("!! No valid settings from EEPROM !! Switching to defaults.");
-    Settings defaults = {
-        true, // valid
-        26.0f, // settings.maxDesiredTemp
-        false, //  settings.stageFreeze
-        true, // settings.ventilationActivated
-        true // settings.rollupActivated
-    };
-    return defaults;
 }
 
 void pinSetup() {
