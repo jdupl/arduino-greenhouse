@@ -1,0 +1,37 @@
+#!/bin/bash
+# usage: ./install
+# Installs libs for the project to ./libs/
+
+
+mkdir -p libs/
+
+declare -a urls=(
+     "https://github.com/adafruit/Adafruit-GFX-Library/archive/refs/tags/1.11.9.tar.gz"
+     "https://github.com/adafruit/Adafruit_BusIO/archive/refs/tags/1.15.0.tar.gz"
+     "https://github.com/adafruit/DHT-sensor-library/archive/refs/tags/1.4.6.tar.gz"
+     "https://github.com/adafruit/Adafruit_SSD1306/archive/refs/tags/2.5.9.tar.gz"
+     "https://github.com/Chris--A/Keypad/archive/refs/tags/3.1.1.tar.gz"
+     "https://github.com/adafruit/Adafruit_Sensor/archive/refs/tags/1.1.14.tar.gz"
+)
+
+ for url in "${urls[@]}"
+ do
+     # Extract the filename from the URL
+     filename=$(basename "$url")
+
+     # Download the tar.gz file
+     echo "Downloading $filename..."
+     wget "$url"
+
+     # Check if download was successful
+     if [ $? -eq 0 ]; then
+         # Extract the tar.gz file into the libs directory
+         echo "Extracting $filename..."
+         tar -xzf "$filename" -C libs/
+
+         # Remove the downloaded tar.gz file
+         rm "$filename"
+     else
+         echo "Failed to download $filename."
+     fi
+ done

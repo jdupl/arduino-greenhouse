@@ -1,8 +1,15 @@
 #!/bin/bash
 
-library_folder="$HOME/Arduino/libraries/"
+library_folder="libs/"
 
-declare -a libs=("Adafruit_GFX_Library" "Adafruit_BusIO" "DHT_sensor_library" "Adafruit_SSD1306" "Keypad")
+declare -a libs=(
+    "Adafruit-GFX-Library-1.11.9"
+    "Adafruit_BusIO-1.15.0"
+    "DHT-sensor-library-1.4.6"
+    "Adafruit_Sensor-1.1.14"
+    "Adafruit_SSD1306-2.5.9"
+    "Keypad-3.1.1"
+)
 
 libraries_options=""
 
