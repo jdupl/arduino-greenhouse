@@ -1,0 +1,18 @@
+#!/bin/bash
+# usage: ./upload <port>
+# ex ./upload ACM0
+
+./compile
+
+if [ $? -ne 0 ]; then
+    echo "compile failed."
+    exit 1
+fi
+
+tty_path="/dev/tty$1"
+
+if [ -f "$tty_path" ]; then
+    arduino-cli upload -b arduino:avr:mega -p "$tty_path" src/
+else
+    echo "$tty_path does not exist."
+fi

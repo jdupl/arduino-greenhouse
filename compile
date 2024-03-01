@@ -1,0 +1,14 @@
+#!/bin/bash
+
+library_folder="$HOME/Arduino/libraries/"
+
+declare -a libs=("Adafruit_GFX_Library" "Adafruit_BusIO" "DHT_sensor_library" "Adafruit_SSD1306" "Keypad")
+
+libraries_options=""
+
+for lib_name in "${libs[@]}"
+do
+    libraries_options+="  --library ${library_folder}${lib_name}"
+done
+
+arduino-cli compile -b arduino:avr:mega $libraries_options src/
