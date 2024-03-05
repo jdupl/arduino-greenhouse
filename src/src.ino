@@ -58,6 +58,14 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // 120VAC fan relay pin and wiring color
 #define FAN_RELAY 24      // brown
 
+// time to open rollup 1/4
+#define ROLLUP_STAGE_DELAY_MS 30000
+
+#define ACTUATOR_MAX_DELAY_MS 60000
+#define ACTUATOR_IS_VAl_THRESHOLD 30 // gt than this threshold means current is flowing
+
+#define STAGE_CHANGE_WAIT_MS 120000 // Duration between automatic stage changes (2 minutes)
+
 
 #define DHT_TYPE DHT22
 #define TICK_TEMP_MS 10000 // tick length for temperature update
@@ -83,6 +91,438 @@ DHT dht(DHT_PIN, DHT_TYPE);
 
 // OneWire oneWire(ONE_WIRE_BUS);
 //DallasTemperature sensors(&oneWire);
+
+#define SETTINGS_ADR 0
+
+struct Settings {
+    bool valid;
+    float maxDesiredTemp;
+    bool stageFreeze;
+    bool ventilationActivated;
+    bool rollupActivated;
+};
+Settings settings;
+
+// stages
+// 0: closed
+// 1 : open ventilation
+// 2 : open fan
+// 3: open rollup 1/4
+// 4: open rollup 1/2
+// 5: open rollup 3/4
+// 6: open rollup fully
+
+// Stage
+enum Stage {WINDOW_CLOSED, WINDOW_OPEN, FAN, ROLLUP_1, ROLLUP_2, ROLLUP_3, ROLLUP_4};
+Stage currentStage = WINDOW_CLOSED;
+unsigned long stageStartTime = 0;
+// unsigned long stageStopTime = 0;
+
+int getStageIndex(Stage s) {
+    switch (s) {
+        case WINDOW_CLOSED:
+            return 0;
+        case WINDOW_OPEN:
+            return 1;
+        case FAN:
+            return 2;
+        case ROLLUP_1:
+            return 3;
+        case ROLLUP_2:
+            return 4;
+        case ROLLUP_3:
+            return 5;
+        case ROLLUP_4:
+            return 6;
+    }
+    return -1;
+}
+
+
+void doStageUpdate(float currentTemp, bool closing) {
+    currentStageTemp = currentTemp;
+    stageStartTime = millis();
+    Stage oldStage = currentStage;
+
+    if (closing) {
+        switch (oldStage) {
+            case WINDOW_CLOSED :
+                printTx("already at min stage");
+                break;
+            case WINDOW_OPEN :
+                currentStage = WINDOW_CLOSED;
+                closeWindowAsync();
+                break;
+            case FAN :
+                currentStage = WINDOW_OPEN;
+                stopFan();
+                break;
+            case ROLLUP_1 :
+                currentStage = FAN;
+                closeRollUpAsync(true);
+                break;
+            case ROLLUP_2 :
+                currentStage = ROLLUP_1;
+                closeRollUpAsync(false);
+                break;
+            case ROLLUP_3 :
+                currentStage = ROLLUP_2;
+                closeRollUpAsync(false);
+                break;
+            case ROLLUP_4:
+                currentStage = ROLLUP_3;
+                closeRollUpAsync(false);
+                break;
+        }
+    } else {
+        switch (oldStage) {
+            case WINDOW_CLOSED :
+                currentStage = WINDOW_OPEN;
+                openWindowAsync();
+                break;
+            case WINDOW_OPEN :
+                currentStage = FAN;
+                startFan();
+                break;
+            case FAN :
+                currentStage = ROLLUP_1;
+                openRollUpAsync(false);
+                break;
+            case ROLLUP_1 :
+                currentStage = ROLLUP_2;
+                openRollUpAsync(false);
+                break;
+            case ROLLUP_2 :
+                currentStage = ROLLUP_3;
+                openRollUpAsync(false);
+                break;
+            case ROLLUP_3 :
+                currentStage = ROLLUP_4;
+                openRollUpAsync(true);
+                break;
+            case ROLLUP_4:
+                printTx("already at max stage");
+                break;
+        }
+    }
+}
+
+void checkForStageChange() {
+    // jump to user input stage. don't wait between stages
+    if (stageJumpTargetIndex != -1) {
+        int currentStageIndex = getStageIndex(currentStage);
+
+        if (stageJumpTargetIndex == currentStageIndex) {
+            stageJumpTargetIndex = -1;
+        } else {
+            bool decreaseStage = currentStageIndex > stageJumpTargetIndex;
+            doStageUpdate(currentTemp, decreaseStage);
+        }
+        return;
+    }
+
+    // TODO check for early stage change if temp changed too much
+
+    unsigned long elapsedTime = millis() - stageStartTime;
+    if (elapsedTime - stageStartTime < STAGE_CHANGE_WAIT_MS) {
+        printTx("Stage change must wait a bit...");
+        return;
+    }
+
+    if (currentTemp > settings.maxDesiredTemp) {
+        // reached min threshold to increase ventilation
+        doStageUpdate(currentTemp, false);
+    } else if (currentTemp <= settings.maxDesiredTemp) {
+        // reached threshold to decrease ventilation
+        doStageUpdate(currentTemp, true);
+    }
+}
+
+void saveSettingsEEPROM() {
+    EEPROM.put(SETTINGS_ADR, settings);
+}
+
+Settings readSettingsEEPROM() {
+    Settings eepromSettings;
+    EEPROM.get(SETTINGS_ADR, eepromSettings);
+
+    if (eepromSettings.valid) {
+        printTx("Got valid settings from EEPROM");
+        return eepromSettings;
+    }
+
+    printTx("!! No valid settings from EEPROM !! Switching to defaults.");
+    Settings defaults = {
+        true, // valid
+        26.0f, // settings.maxDesiredTemp
+        false, //  settings.stageFreeze
+        true, // settings.ventilationActivated
+        true // settings.rollupActivated
+    };
+    return defaults;
+}
+
+
+// OLED pins and wiring colors
+#define OLED_SDA 20     // green
+#define OLED_SCL 21     // yellow
+
+
+// Keypad pins and wiring colors
+#define R1 41       // yellow
+#define R2 40       // red
+#define R3 39       // black
+#define R4 38       // white
+#define C1 37       // brown
+#define C2 36       // green
+#define C3 35       // blue
+#define C4 34       // orange
+
+
+// Configuration menu options
+enum ConfigOption { MAX_TEMP, STAGE_JUMP, STAGE_FREEZE, VENTILATION, ROLLUP };
+#define CONFIG_OPTION_COUNT 5 // UPDATE MANUALLY THIS COUNT
+
+ConfigOption currentConfigOption = MAX_TEMP;
+
+// Display state
+enum DisplayState { CONFIG_MENU, STATS };
+DisplayState displayState = STATS;
+
+char hexaKeys[4][4] = {
+  {'1', '2', '3', 'A'},
+  {'4', '5', '6', 'B'},
+  {'7', '8', '9', 'C'},
+  {'*', '0', '#', 'D'}
+};
+
+byte rowPins[4] = {R1, R2, R3, R4};
+byte colPins[4] = {C1, C2, C3, C4};
+Keypad keypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, 4, 4);
+
+char lastChar = 'x';
+
+float promptNumericInput(const char* prompt, float currentValue) {
+  String input = "";
+  promptNumericInputDisplay(prompt, String(currentValue));
+
+  while (true) {
+    char key = keypad.getKey();
+    if (key != NO_KEY) {
+      if (key == '#') {
+        return input.toFloat();
+      } else if (key == '*') {
+        return currentValue; // Cancel input
+      } else if (isdigit(key) || key == '.') {
+        input += key;
+      }
+      promptNumericInputDisplay(prompt, input);
+    }
+    delay(50);
+  }
+}
+
+void scrollMenu(int direction) {
+  currentConfigOption = static_cast<ConfigOption>((currentConfigOption + direction + CONFIG_OPTION_COUNT) % CONFIG_OPTION_COUNT);
+}
+
+void toggleOption(bool& option) {
+  option = !option;
+}
+
+void promptNumericInputDisplay(const char* prompt, String displayValue) {
+    display.clearDisplay();
+
+    display.setTextSize(1); // Draw 2X-scale text
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.println(prompt);
+
+    display.print("Value: ");
+    display.println(displayValue);
+    display.display();
+}
+
+
+void displayConfigMenu() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  int numOptions = 4; // Number of configuration options to display at a time
+  int startOption = static_cast<int>(currentConfigOption) - 1;
+  if (startOption < 0) startOption = 0;
+  if (startOption + numOptions > CONFIG_OPTION_COUNT) startOption = CONFIG_OPTION_COUNT - numOptions;
+
+  for (int i = 0; i < numOptions; i++) {
+    display.setCursor(10, 10 + (i * 15));
+    ConfigOption option = static_cast<ConfigOption>(startOption + i);
+
+    switch (option) {
+      // case MIN_TEMP:
+      //   display.print("Set Min Temp: ");
+      //   display.print(minDesiredTemp);
+      //   break;
+      case MAX_TEMP:
+        display.print("Set Max Temp: ");
+        display.print(settings.maxDesiredTemp);
+        break;
+      case STAGE_JUMP:
+        display.print("Jump stage: ");
+        display.print(stageJumpTargetIndex);
+        break;
+      case STAGE_FREEZE:
+        display.print("Freeze stages: ");
+        display.print(settings.stageFreeze ? "On" : "Off");
+        break;
+      case VENTILATION:
+        display.print("Ventilation: ");
+        display.print(settings.ventilationActivated ? "On" : "Off");
+        break;
+      case ROLLUP:
+        display.print("Rollup: ");
+        display.print(settings.rollupActivated ? "On" : "Off");
+        break;
+    }
+  }
+
+  // Display selector
+  display.setCursor(0, 10 + ((currentConfigOption - startOption) * 15));
+  display.print(">");
+
+  display.display();
+}
+
+void handleStatsKeyInput(char keyInput) {
+  switch (keyInput) {
+    case '#':
+      displayState = CONFIG_MENU;
+      break;
+  }
+}
+
+void handleConfigMenuKeyInput(char keyInput) {
+  switch (keyInput) {
+    case 'A': // Scroll up
+      scrollMenu(-1);
+      displayConfigMenu();
+      break;
+    case 'B': // Scroll down
+      scrollMenu(1);
+      displayConfigMenu();
+      break;
+    case '*': // back to stats
+      displayState = STATS;
+      displayStats();
+      break;
+    case '#': // Choose option
+        switch (currentConfigOption) {
+        case MAX_TEMP:
+            settings.maxDesiredTemp = promptNumericInput("Enter Max Temp: ", settings.maxDesiredTemp);
+            saveSettingsEEPROM();
+            break;
+        case STAGE_JUMP:
+            stageJumpTargetIndex = static_cast<int>(promptNumericInput(
+                "0 closed 1 fans 2 1/4 rollup.. 5 100% rollup"
+                , static_cast<float>(stageJumpTargetIndex)));
+            // TODO SET STAGE
+            break;
+        case STAGE_FREEZE:
+          toggleOption(settings.stageFreeze);
+          saveSettingsEEPROM();
+          break;
+        case VENTILATION:
+          toggleOption(settings.ventilationActivated);
+          saveSettingsEEPROM();
+          break;
+        case ROLLUP:
+          toggleOption(settings.rollupActivated);
+          saveSettingsEEPROM();
+          break;
+      }
+
+      displayConfigMenu();
+      break;
+  }
+}
+
+void handleKeyInput(char keyInput) {
+  switch (displayState) {
+    case STATS:
+      handleStatsKeyInput(keyInput);
+      break;
+    case CONFIG_MENU:
+      handleConfigMenuKeyInput(keyInput);
+      break;
+  }
+}
+
+void displayDHT22() {
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.print("T: ");
+    display.println(currentTemp);
+
+    display.print("H: ");
+    display.println(currentHumidity);
+}
+
+void displayDHT22Error() {
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.println("DHT22 FATAL ERROR");
+}
+
+void displayStats() {
+  if (dht22Working) {
+      displayDHT22();
+  } else {
+      displayDHT22Error();
+  }
+
+  display.print("stage: ");
+  display.println(String(currentStage));
+
+  if (currentOperation != IDLING) {
+      display.print("Op... ");
+      char c = '+';
+      if (lastChar == '+') {
+          c = 'x';
+          lastChar = 'x';
+      } else {
+          lastChar = '+';
+      }
+      display.print(c);
+
+  }
+  display.display();
+}
+
+void handleDisplayState() {
+  if (displayState == STATS) {
+    displayStats();
+  } else {
+    displayConfigMenu();
+  }
+}
+
+void handleUserKeyAndDisplay() {
+    char key = keypad.getKey();
+
+    if (key != NO_KEY) {
+        handleKeyInput(key);
+    }
+
+    handleDisplayState();
+}
+
 
 void printTx(String chars) {
     if (DEBUG_EN == 1) {
