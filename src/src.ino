@@ -1,9 +1,7 @@
 // TODO
 
-// MUST start up routine (close all systems)
+// MUST fix eeprom settings
 
-// NICE display current stage
-// NICE display current operation
 // NICE current sensing from bts controllers for better error detection
 // NICE track and display uptime
 // NICE track and display min/max temps
@@ -25,15 +23,18 @@
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for 128x64, 0x3C for 128x32
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// sensors
-#define DHT_PIN 22
-// #define ONE_WIRE_BUS 23
+/*
+    ANALOG PINS
+*/
 
-// rollup controller pins and wiring colors
-#define ROLLUP_RPWM 13 // green
-#define ROLLUP_LPWM 12 // yellow
-#define ROLLUP_R_IS 3  // analog blue
+#define ACTUATOR_R_IS 0  // analog white
+#define ACTUATOR_L_IS 1  // analog grey
 #define ROLLUP_L_IS 2  // analog purple
+#define ROLLUP_R_IS 3  // analog blue
+
+/*
+    DIGITAL PINS
+*/
 
 // actuator notes
 // to extend: left RPM
@@ -41,39 +42,61 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 // Actuator controller pins and wiring colors
 #define ACTUATOR_RPWM 11 // green
 #define ACTUATOR_LPWM 10 // yellow
-#define ACTUATOR_R_IS 0  // analog white
-#define ACTUATOR_L_IS 1  // analog grey
+
+// rollup controller pins and wiring colors
+#define ROLLUP_LPWM 12 // yellow
+#define ROLLUP_RPWM 13 // green
+
+// OLED pins and wiring colors
+#define OLED_SDA 20 // green
+#define OLED_SCL 21 // yellow
 
 // limit switch wiring
 // HIGH when untouched, LOW when touched
-// C pin GND
-// NO pin D25 pull-up
-// NC pin not connected
+// 'C' pin GND  'NO' digital pin pulled up
 #define ACTUATOR_LIMIT_SWITCH 23 // green INPUT PULLUP
 
 // 120VAC fan relay pin and wiring color
 #define FAN_RELAY 24 // brown
 
+// Keypad pins and wiring colors
+#define R1 41 // yellow
+#define R2 40 // red
+#define R3 39 // black
+#define R4 38 // white
+#define C1 37 // brown
+#define C2 36 // green
+#define C3 35 // blue
+#define C4 34 // orange
+
+#define DHT_DATA_PIN 42 // blue
+#define DHT_5V_PIN 43 // white
+
+
+/*
+    DELAYS
+*/
 // time to open rollup 1/4
 #define ROLLUP_STAGE_DELAY_MS 45000
-
 #define ACTUATOR_MAX_DELAY_MS 60000
-#define ACTUATOR_IS_VAl_THRESHOLD 60 // gt than this threshold means current is flowing
-
 #define STAGE_CHANGE_WAIT_MS 120000 // Duration between automatic stage changes (2 minutes)
+#define TICK_TEMP_MS 20000 // tick length for temperature update
+
+
+/*
+    CALIBRATION
+*/
+
+#define CURRENT_FLOW_THRESHOLD 60 // gt than this threshold means current is flowing
+#define SETTINGS_ADR 0
 
 #define DHT_TYPE DHT22
-#define TICK_TEMP_MS 10000 // tick length for temperature update
+DHT dht(DHT_DATA_PIN, DHT_TYPE);
+
 #define DEBUG_EN 1         // set to 1 or 0
 
-// settings saved to eeprom
 
-float currentTemp = -1;
-float currentHumidity = -1;
-bool dht22Working = true;
-unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
-float currentStageTemp = 0;
-int stageJumpTargetIndex = -1;
+
 
 // Operation (async operation of motors)
 enum Operation
@@ -84,16 +107,7 @@ enum Operation
     ROLLDOWN_OP,
     IDLING
 };
-Operation currentOperation = IDLING;
-unsigned long operationStartTime = 0;
-unsigned long operationStopTime = 0;
 
-DHT dht(DHT_PIN, DHT_TYPE);
-
-// OneWire oneWire(ONE_WIRE_BUS);
-// DallasTemperature sensors(&oneWire);
-
-#define SETTINGS_ADR 0
 
 struct Settings
 {
@@ -125,9 +139,23 @@ enum Stage
     ROLLUP_3,
     ROLLUP_4
 };
+
+
 Stage currentStage = WINDOW_CLOSED;
 unsigned long stageStartTime = 0;
-// unsigned long stageStopTime = 0;
+
+Operation currentOperation = IDLING;
+unsigned long operationStartTime = 0;
+unsigned long operationStopTime = 0;
+
+float currentTemp = -1;
+float currentHumidity = -1;
+bool dht22Working = true;
+unsigned long sensorLastTickTime = 0; // Time at the beginning of the last tick
+
+int stageJumpTargetIndex = -1;
+
+
 
 int getStageIndex(Stage s)
 {
@@ -153,7 +181,6 @@ int getStageIndex(Stage s)
 
 void doStageUpdate(float currentTemp, bool closing)
 {
-    currentStageTemp = currentTemp;
     stageStartTime = millis();
     Stage oldStage = currentStage;
     printTx("stage update");
@@ -295,20 +322,6 @@ Settings readSettingsEEPROM()
     };
     return defaults;
 }
-
-// OLED pins and wiring colors
-#define OLED_SDA 20 // green
-#define OLED_SCL 21 // yellow
-
-// Keypad pins and wiring colors
-#define R1 41 // yellow
-#define R2 40 // red
-#define R3 39 // black
-#define R4 38 // white
-#define C1 37 // brown
-#define C2 36 // green
-#define C3 35 // blue
-#define C4 34 // orange
 
 // Configuration menu options
 enum ConfigOption
@@ -706,7 +719,7 @@ bool hasCurrentFlowing(int pin)
     // sample analog input for 20ms
     int meanVal = readAnalogPinSample(pin, 20);
     printTx(String(meanVal));
-    return meanVal > ACTUATOR_IS_VAl_THRESHOLD;
+    return meanVal > CURRENT_FLOW_THRESHOLD;
 }
 
 void stopCurrentOperation()
@@ -806,31 +819,33 @@ void updateTemp()
     bool success = false;
     int currentTry = 0;
 
-    while (!success && currentTry < maxTries)
-    {
+    // power on sensor
+    digitalWrite(DHT_5V_PIN, HIGH);
+    delay(1000);
+
+    while (!success && currentTry < maxTries) {
         printTx("reading dht22 try #" + String(currentTry));
         currentTemp = dht.readTemperature();
         currentHumidity = dht.readHumidity();
 
-        if (isnan(currentTemp) || isnan(currentHumidity))
-        {
+        if (isnan(currentTemp) || isnan(currentHumidity)) {
             printTx("Error while reading DHT22 data!");
             dht22Working = false;
             currentTry++;
             delay(tryDelayMs);
-        }
-        else
-        {
+        } else {
             printTx("temp" + String(currentTemp));
             printTx("humidity" + String(currentHumidity));
             success = true;
             dht22Working = true;
         }
     }
-    if (!success)
-    {
+    if (!success) {
         printTx("Could not read DHT22 after maxTries !!!");
     }
+
+    // power off sensor
+    digitalWrite(DHT_5V_PIN, LOW);
 }
 
 void updateSensorsIfNeeded()
@@ -863,6 +878,8 @@ void loop()
 
 void pinSetup()
 {
+    pinMode(DHT_5V_PIN, OUTPUT);
+
     pinMode(FAN_RELAY, OUTPUT);
 
     pinMode(ACTUATOR_LPWM, OUTPUT);
