@@ -140,7 +140,7 @@ unsigned long operationStopTime = 0;
 float currentTemp = -1;
 float currentHumidity = -1;
 bool dht22Working = true;
-unsigned long sensorLastTickTime = 0;  // Time at the beginning of the last tick
+unsigned long dhtLastUpdateTime = 0;  // Time at the beginning of the last tick
 
 int stageJumpTargetIndex = -1;
 
@@ -705,59 +705,72 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-// float getExtTemperature() {
-//     sensors.requestTemperatures();
-//     float temp = sensors.getTempCByIndex(0);
-//     return temp;
-// }
-void updateTemp() {
-    // update dht22 sensor values
-    int maxTries = 5;
-    int tryDelayMs = 250;
-    bool success = false;
-    int currentTry = 0;
 
-    // power on sensor
-    digitalWrite(DHT_5V_PIN, HIGH);
-    delay(1000);
 
-    while (!success && currentTry < maxTries) {
-        printTx("reading dht22 try #" + String(currentTry));
-        currentTemp = dht.readTemperature();
-        currentHumidity = dht.readHumidity();
+enum DhtOperation {
+    WAITING,
+    DHT_IDLING
+};
 
-        if (isnan(currentTemp) || isnan(currentHumidity)) {
-            printTx("Error while reading DHT22 data!");
-            dht22Working = false;
-            currentTry++;
-            delay(tryDelayMs);
-        } else {
-            printTx("temp" + String(currentTemp));
-            printTx("humidity" + String(currentHumidity));
-            success = true;
-            dht22Working = true;
-        }
-    }
-    if (!success) {
-        printTx("Could not read DHT22 after maxTries !!!");
+int dhtUpdateReadyAt = 0;
+int dhtUpdateCurrentTry = 0;
+
+DhtOperation dhtOperation = DHT_IDLING;
+
+void handleDhtState() {
+    if (dhtOperation == DHT_IDLING || millis() < dhtUpdateReadyAt) {
+        // no reading needed or still powering on
+        return;
     }
 
+    currentTemp = dht.readTemperature();
+    currentHumidity = dht.readHumidity();
+
+    dhtOperation = DHT_IDLING;
     // power off sensor
     digitalWrite(DHT_5V_PIN, LOW);
+
+    // failed
+    if (isnan(currentTemp) || isnan(currentHumidity)) {
+        dhtUpdateCurrentTry++;
+        printTx("Error while reading DHT22 data!");
+        
+        if (dhtUpdateCurrentTry > 3) {
+            dht22Working = false;
+            printTx("DHT failed to read after retrying !!");
+            dhtLastUpdateTime = millis();
+        } else {
+            startDhtUpdate();
+        }
+    } else {
+        // success
+        dht22Working = true;
+        dhtUpdateCurrentTry = 0;
+        dhtLastUpdateTime = millis();
+        printTx("temp" + String(currentTemp));
+        printTx("humidity" + String(currentHumidity));
+    }
+}
+
+void startDhtUpdate() {
+    // power on sensor and wait async for 2000ms
+    digitalWrite(DHT_5V_PIN, HIGH);
+    int dhtUpdateReadyAt = millis() + 2000;
+    dhtOperation = WAITING;
 }
 
 void updateSensorsIfNeeded() {
-    unsigned long elapsedTimeSinceTempTick = millis() - sensorLastTickTime;
+    unsigned long elapsedTimeSinceTempTick = millis() - dhtLastUpdateTime;
     // float tempExt = getExtTemperature();
-    if (elapsedTimeSinceTempTick > TICK_TEMP_MS || sensorLastTickTime == 0) {
-        updateTemp();
-        sensorLastTickTime = millis();
+    if (elapsedTimeSinceTempTick > TICK_TEMP_MS || dhtLastUpdateTime == 0) {
+        startDhtUpdate();
     }
 }
 
 void loop() {
     updateSensorsIfNeeded();
     handleUserKeyAndDisplay();
+    handleDhtState();
 
     if (currentOperation == IDLING && !settings.stageFreeze) {
         checkForStageChange();
