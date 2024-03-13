@@ -314,7 +314,8 @@ ConfigOption currentConfigOption = MAX_TEMP;
 // Display state
 enum DisplayState {
     CONFIG_MENU,
-    STATS
+    STATS,
+    PROMPT
 };
 DisplayState displayState = STATS;
 
@@ -330,46 +331,12 @@ Keypad keypad = Keypad(makeKeymap(hexaKeys), rowPins, colPins, 4, 4);
 
 char lastChar = 'x';
 
-float promptNumericInput(const char *prompt, float currentValue) {
-    String input = "";
-    promptNumericInputDisplay(prompt, String(currentValue));
-
-    while (true) {
-        char key = keypad.getKey();
-        if (key != NO_KEY) {
-            if (key == '#') {
-                return input.toFloat();
-            } else if (key == '*') {
-                return currentValue;  // Cancel input
-            } else if (isdigit(key) || key == '.') {
-                input += key;
-            }
-            promptNumericInputDisplay(prompt, input);
-        }
-        delay(50);
-    }
-}
-
 void scrollMenu(int direction) {
     currentConfigOption = static_cast<ConfigOption>((currentConfigOption + direction + CONFIG_OPTION_COUNT) % CONFIG_OPTION_COUNT);
 }
 
 void toggleOption(bool &option) {
     option = !option;
-}
-
-void promptNumericInputDisplay(const char *prompt, String displayValue) {
-    display.clearDisplay();
-
-    display.setTextSize(1);  // Draw 2X-scale text
-    display.setTextColor(SSD1306_WHITE);
-    display.setCursor(10, 0);
-
-    display.println(prompt);
-
-    display.print("Value: ");
-    display.println(displayValue);
-    display.display();
 }
 
 void displayConfigMenu() {
@@ -389,10 +356,6 @@ void displayConfigMenu() {
         ConfigOption option = static_cast<ConfigOption>(startOption + i);
 
         switch (option) {
-            // case MIN_TEMP:
-            //   display.print("Set Min Temp: ");
-            //   display.print(minDesiredTemp);
-            //   break;
             case MAX_TEMP:
                 display.print("Set Max Temp: ");
                 display.print(settings.maxDesiredTemp);
@@ -431,6 +394,44 @@ void handleStatsKeyInput(char keyInput) {
     }
 }
 
+String input = "";
+
+void processCompleteNumericInput(float v) {
+    switch (currentConfigOption) {
+        case MAX_TEMP:
+            settings.maxDesiredTemp = v;
+            saveSettingsEEPROM();
+            break;
+        case STAGE_JUMP:
+            stageJumpTargetIndex = static_cast<int>(v);
+            break;
+    }
+}
+
+void handlePromptKeyInput(char key) {
+    if (key == '*') {
+        input = "";
+        displayState = CONFIG_MENU;
+    } else if (key == '#') {
+        float value = input.toFloat();
+        input = "";
+        displayState = CONFIG_MENU;
+        // Process input value
+        processCompleteNumericInput(value);
+    } else if (isdigit(key) || key == '.') {
+        input += key;
+    }
+}
+
+const char *prompt = "";
+String displayValue = "";
+
+void startNumericPromptAsync(char *p, String displayVal) {
+    prompt = p;
+    displayValue = displayVal;
+    displayState = PROMPT;
+}
+
 void handleConfigMenuKeyInput(char keyInput) {
     switch (keyInput) {
         case 'A':  // Scroll up
@@ -448,18 +449,14 @@ void handleConfigMenuKeyInput(char keyInput) {
         case '#':  // Choose option
             switch (currentConfigOption) {
                 case MAX_TEMP:
-                    settings.maxDesiredTemp = promptNumericInput("Enter Max Temp: ", settings.maxDesiredTemp);
-                    saveSettingsEEPROM();
+                    startNumericPromptAsync("Enter Max Temp: ", String(settings.maxDesiredTemp));
+                    // saveSettingsEEPROM();
                     break;
                 case STAGE_JUMP:
-                    stageJumpTargetIndex = static_cast<int>(promptNumericInput(
-                        "0, 1 window 2 fans 3 1/4 rollup.. 6 100% rollup", static_cast<float>(stageJumpTargetIndex)));
+                    startNumericPromptAsync("0, 1 window 2 fans 3 1/4 rollup.. 6 100% rollup", String(stageJumpTargetIndex));
                     break;
                 case STAGE_FREEZE:
-                    // toggleOption(settings.stageFreeze);
                     settings.stageFreeze = !settings.stageFreeze;
-                    printTx("new freeze value");
-                    printTx(String(settings.stageFreeze));
                     saveSettingsEEPROM();
                     break;
                 case VENTILATION:
@@ -484,6 +481,9 @@ void handleKeyInput(char keyInput) {
             break;
         case CONFIG_MENU:
             handleConfigMenuKeyInput(keyInput);
+            break;
+        case PROMPT:
+            handlePromptKeyInput(keyInput);
             break;
     }
 }
@@ -534,11 +534,31 @@ void displayStats() {
     display.display();
 }
 
+void promptNumericInputDisplay() {
+    display.clearDisplay();
+
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(10, 0);
+
+    display.println(prompt);
+
+    display.print("Value: ");
+    display.println(displayValue);
+    display.display();
+}
+
 void handleDisplayState() {
-    if (displayState == STATS) {
-        displayStats();
-    } else {
-        displayConfigMenu();
+    switch (displayState) {
+        case STATS:
+            displayStats();
+            break;
+        case CONFIG_MENU:
+            displayConfigMenu();
+            break;
+        case PROMPT:
+            promptNumericInputDisplay();
+            break;
     }
 }
 
@@ -618,24 +638,23 @@ bool limitSwitchTouched() {
     return digitalRead(ACTUATOR_LIMIT_SWITCH) == LOW;
 }
 
-int readAnalogPinSample(int pin, int ms) {
-    unsigned long startTime = micros();
+int readAnalogPinSample(int pin, int targetMs) {
+    unsigned long startTime = millis();
     unsigned long sum = 0;
     int numReadings = 0;
-    int targetMicros = ms * 1000;
 
-    // Loop until sampling window is over
-    while (micros() - startTime < targetMicros) {
+    while (millis() - startTime < targetMs) {
         int v = analogRead(pin);
         sum += v;
         numReadings++;
+        delay(1);
     }
     return sum / numReadings;
 }
 
 bool hasCurrentFlowing(int pin) {
-    // sample analog input for 20ms
-    int meanVal = readAnalogPinSample(pin, 20);
+    // sample analog input for 50ms
+    int meanVal = readAnalogPinSample(pin, 50);
     printTx(String(meanVal));
     return meanVal > CURRENT_FLOW_THRESHOLD;
 }
