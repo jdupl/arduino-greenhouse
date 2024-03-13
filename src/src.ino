@@ -712,16 +712,23 @@ enum DhtOperation {
     DHT_IDLING
 };
 
-int dhtUpdateReadyAt = 0;
+unsigned long dhtUpdateReadyAt = 0;
 int dhtUpdateCurrentTry = 0;
 
 DhtOperation dhtOperation = DHT_IDLING;
 
 void handleDhtState() {
-    if (dhtOperation == DHT_IDLING || millis() < dhtUpdateReadyAt) {
-        // no reading needed or still powering on
-        return;
+    if (dhtOperation == DHT_IDLING ){
+      return;
     }
+      if (millis() < dhtUpdateReadyAt) {
+        printTx("not ready yet");
+            // no reading needed or still powering on
+        return;
+    
+    }
+    
+    printTx("reading dht");
 
     currentTemp = dht.readTemperature();
     currentHumidity = dht.readHumidity();
@@ -753,9 +760,15 @@ void handleDhtState() {
 }
 
 void startDhtUpdate() {
+    if (dhtOperation == WAITING) {
+      return;
+    }
     // power on sensor and wait async for 2000ms
+    printTx("starting dht sensors wait 2s");
+    printTx(String(millis()));
     digitalWrite(DHT_5V_PIN, HIGH);
-    int dhtUpdateReadyAt = millis() + 2000;
+    dhtUpdateReadyAt = millis() + 2000;
+    printTx(String(dhtUpdateReadyAt));
     dhtOperation = WAITING;
 }
 
@@ -819,3 +832,4 @@ void setup() {
     currentStage = ROLLUP_4;
     stageJumpTargetIndex = 0;
 }
+
