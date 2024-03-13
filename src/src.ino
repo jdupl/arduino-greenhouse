@@ -9,6 +9,7 @@
 
 #include <DHT.h>
 #include <EEPROM.h>
+#include <avr/wdt.h>
 // #include <OneWire.h>
 // #include <DallasTemperature.h>
 #include <Adafruit_GFX.h>
@@ -705,8 +706,6 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-
-
 enum DhtOperation {
     WAITING,
     DHT_IDLING
@@ -741,7 +740,7 @@ void handleDhtState() {
     if (isnan(currentTemp) || isnan(currentHumidity)) {
         dhtUpdateCurrentTry++;
         printTx("Error while reading DHT22 data!");
-        
+
         if (dhtUpdateCurrentTry > 3) {
             dht22Working = false;
             printTx("DHT failed to read after retrying !!");
@@ -781,6 +780,7 @@ void updateSensorsIfNeeded() {
 }
 
 void loop() {
+    wdt_reset();
     updateSensorsIfNeeded();
     handleUserKeyAndDisplay();
     handleDhtState();
@@ -815,12 +815,17 @@ void setup() {
     Serial.begin(9600);
     printTx("booting up");
 
+    // watchdog reboot after 1s
+    wdt_enable(WDTO_1S);
+
     pinSetup();
+
     if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
         Serial.println(F("SSD1306 allocation failed"));
         for (;;)
             ;
     }
+
     dht.begin();
 
     settings = readSettingsEEPROM();
