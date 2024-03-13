@@ -131,6 +131,11 @@ enum Stage {
     ROLLUP_4
 };
 
+enum DhtOperation {
+    WAITING,
+    DHT_IDLING
+};
+
 Stage currentStage = WINDOW_CLOSED;
 unsigned long stageStartTime = 0;
 
@@ -141,7 +146,10 @@ unsigned long operationStopTime = 0;
 float currentTemp = -1;
 float currentHumidity = -1;
 bool dht22Working = true;
+DhtOperation dhtOperation = DHT_IDLING;
 unsigned long dhtLastUpdateTime = 0;  // Time at the beginning of the last tick
+unsigned long dhtUpdateReadyAt = 0;
+int dhtUpdateCurrentTry = 0;
 
 int stageJumpTargetIndex = -1;
 
@@ -706,27 +714,13 @@ void stopFan() {
     digitalWrite(FAN_RELAY, LOW);
 }
 
-enum DhtOperation {
-    WAITING,
-    DHT_IDLING
-};
-
-unsigned long dhtUpdateReadyAt = 0;
-int dhtUpdateCurrentTry = 0;
-
-DhtOperation dhtOperation = DHT_IDLING;
-
 void handleDhtState() {
-    if (dhtOperation == DHT_IDLING ){
-      return;
-    }
-      if (millis() < dhtUpdateReadyAt) {
+    if (dhtOperation == DHT_IDLING || millis() < dhtUpdateReadyAt) {
         printTx("not ready yet");
-            // no reading needed or still powering on
+        // no reading needed or still powering on
         return;
-    
     }
-    
+
     printTx("reading dht");
 
     currentTemp = dht.readTemperature();
@@ -745,6 +739,7 @@ void handleDhtState() {
             dht22Working = false;
             printTx("DHT failed to read after retrying !!");
             dhtLastUpdateTime = millis();
+            dhtUpdateCurrentTry = 0;
         } else {
             startDhtUpdate();
         }
@@ -760,14 +755,12 @@ void handleDhtState() {
 
 void startDhtUpdate() {
     if (dhtOperation == WAITING) {
-      return;
+        return;
     }
     // power on sensor and wait async for 2000ms
-    printTx("starting dht sensors wait 2s");
-    printTx(String(millis()));
+    printTx("starting dht sensors waiting 2s");
     digitalWrite(DHT_5V_PIN, HIGH);
     dhtUpdateReadyAt = millis() + 2000;
-    printTx(String(dhtUpdateReadyAt));
     dhtOperation = WAITING;
 }
 
@@ -782,8 +775,8 @@ void updateSensorsIfNeeded() {
 void loop() {
     wdt_reset();
     updateSensorsIfNeeded();
-    handleUserKeyAndDisplay();
     handleDhtState();
+    handleUserKeyAndDisplay();
 
     if (currentOperation == IDLING && !settings.stageFreeze) {
         checkForStageChange();
@@ -837,4 +830,3 @@ void setup() {
     currentStage = ROLLUP_4;
     stageJumpTargetIndex = 0;
 }
-
