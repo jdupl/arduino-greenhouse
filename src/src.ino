@@ -495,10 +495,41 @@ void displayDHT22() {
     display.setCursor(10, 0);
 
     display.print("T: ");
-    display.println(currentTemp);
+    display.print(currentTemp);
 
-    display.print("H: ");
+    display.print(" H: ");
     display.println(currentHumidity);
+}
+
+
+void displayUptime() {
+    unsigned long ms = millis();
+    long days = 0;
+    long hours = 0;
+    long mins = 0;
+    long secs = 0;
+    String secs_o = ":";
+    String mins_o = ":";
+    String hours_o = ":";
+    secs = ms / 1000; 
+    mins = secs / 60; 
+    hours = mins / 60;
+    days = hours / 24;
+    secs = secs - (mins * 60);
+    mins = mins - (hours * 60);
+    hours = hours - (days * 24);
+    if (secs < 10) {
+        secs_o = ":0";
+    }
+    if (mins < 10) {
+        mins_o = ":0";
+    }
+    if (hours < 10) {
+        hours_o = ":0";
+
+    }
+
+    display.println(days + hours_o + hours + mins_o + mins + secs_o + secs);
 }
 
 void displayDHT22Error() {
@@ -507,7 +538,7 @@ void displayDHT22Error() {
     display.setTextColor(SSD1306_WHITE);
     display.setCursor(10, 0);
 
-    display.println("DHT22 FATAL ERROR");
+    display.println("DHT ERR");
 }
 
 void displayStats() {
@@ -518,10 +549,10 @@ void displayStats() {
     }
 
     display.print("stage: ");
-    display.println(String(currentStage));
+    display.print(String(currentStage));
 
     if (currentOperation != IDLING) {
-        display.print("Op... ");
+        display.print(" Op ");
         char c = '+';
         if (lastChar == '+') {
             c = 'x';
@@ -529,8 +560,11 @@ void displayStats() {
         } else {
             lastChar = '+';
         }
-        display.print(c);
+        display.println(c);
+    } else {
+        display.println();
     }
+    displayUptime();
     display.display();
 }
 
@@ -610,9 +644,6 @@ void openRollUpAsync(bool fullyOpen) {
     } else {
         operationStopTime = ROLLUP_STAGE_DELAY_MS * 4 + operationStartTime;
     }
-
-    printTx(String(operationStartTime));
-    printTx(String(operationStopTime));
 
     analogWrite(ROLLUP_RPWM, 0);
     analogWrite(ROLLUP_LPWM, 255);
@@ -802,7 +833,7 @@ void loop() {
     } else if (currentOperation != IDLING) {
         checkIfOperationCompleted();
     }
-    delay(50);
+    delay(100);
 }
 
 void pinSetup() {
@@ -826,6 +857,9 @@ void pinSetup() {
 void setup() {
     Serial.begin(9600);
     printTx("booting up");
+
+    wdt_disable();
+    delay(2000);
 
     // watchdog reboot after 1s
     wdt_enable(WDTO_1S);
