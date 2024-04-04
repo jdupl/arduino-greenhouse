@@ -395,6 +395,8 @@ void handleStatsKeyInput(char keyInput) {
 }
 
 String input = "";
+const char *prompt = "";
+String displayValue = "";
 
 void processCompleteNumericInput(float v) {
     switch (currentConfigOption) {
@@ -423,9 +425,6 @@ void handlePromptKeyInput(char key) {
         displayValue = input;
     }
 }
-
-const char *prompt = "";
-String displayValue = "";
 
 void startNumericPromptAsync(char *p, String displayVal) {
     prompt = p;
