@@ -1,7 +1,5 @@
 // TODO
 
-// MUST fix eeprom settings
-
 // NICE current sensing from bts controllers for better error detection
 // NICE track and display uptime
 // NICE track and display min/max temps
@@ -282,8 +280,7 @@ Settings readSettingsEEPROM() {
     Settings eepromSettings;
     EEPROM.get(SETTINGS_ADR, eepromSettings);
 
-    // if (eepromSettings.valid) {
-    if (false) {
+    if (eepromSettings.valid) {
         printTx("Got valid settings from EEPROM");
         return eepromSettings;
     }
@@ -450,7 +447,6 @@ void handleConfigMenuKeyInput(char keyInput) {
             switch (currentConfigOption) {
                 case MAX_TEMP:
                     startNumericPromptAsync("Enter Max Temp: ", String(settings.maxDesiredTemp));
-                    // saveSettingsEEPROM();
                     break;
                 case STAGE_JUMP:
                     startNumericPromptAsync("0, 1 window 2 fans 3 1/4 rollup.. 6 100% rollup", String(stageJumpTargetIndex));
