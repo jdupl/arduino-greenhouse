@@ -420,6 +420,7 @@ void handlePromptKeyInput(char key) {
         processCompleteNumericInput(value);
     } else if (isdigit(key) || key == '.') {
         input += key;
+        displayValue = input;
     }
 }
 
