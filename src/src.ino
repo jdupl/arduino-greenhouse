@@ -544,11 +544,10 @@ void displayStats() {
         displayDHT22Error();
     }
 
-    display.print("stage: ");
+    display.print("s: ");
     display.print(String(currentStage));
 
     if (currentOperation != IDLING) {
-        display.print(" Op ");
         char c = '+';
         if (lastChar == '+') {
             c = 'x';
